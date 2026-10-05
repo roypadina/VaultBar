@@ -1,0 +1,48 @@
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "**Never paste a vault password, or anything from inside a vault, into an issue.**"
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Right-click the menu bar icon → Lock All
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "15.3"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: VaultBar version and install method
+      placeholder: "0.1.0, Homebrew"
+    validations:
+      required: true
+  - type: textarea
+    id: vault
+    attributes:
+      label: Vault details
+      description: Image type (.sparsebundle / .dmg), where it lives (local disk, external drive, synced folder), and any error text VaultBar showed.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log lines
+      description: "Output of `log show --predicate 'subsystem == \"com.padina.vaultbar\"' --info --last 1h` (vault names and lock reasons only)."
+      render: text
