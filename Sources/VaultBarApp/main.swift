@@ -38,6 +38,16 @@ if let index = CommandLine.arguments.firstIndex(of: "--render-settings"), index 
     exit(0)
 }
 
+// One VaultBar at a time. At login the LaunchAgent copy and a Finder / `open` / login-window-restored copy can
+// start together: the first to take the lock wins, the other exits 0 (so launchd doesn't restart it either).
+// The bundle-id check also catches an older version without the lock.
+let instanceLock = open(NSTemporaryDirectory() + "com.padina.vaultbar.lock", O_CREAT | O_RDWR, 0o600)
+let otherCopyRunning = NSRunningApplication.runningApplications(withBundleIdentifier: "com.padina.vaultbar")
+    .contains { $0.processIdentifier != getpid() }
+if otherCopyRunning || (instanceLock >= 0 && flock(instanceLock, LOCK_EX | LOCK_NB) != 0) {
+    exit(0)
+}
+
 let app = NSApplication.shared
 let controller = AppController()
 app.delegate = controller

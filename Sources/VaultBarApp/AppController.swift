@@ -23,6 +23,13 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private var pause = AutoLockPause()
     private var screenLocked = false
     private var windows: [String: NSWindow] = [:]
+    private lazy var passwordPanel = PasswordPanel()
+
+    /// Login item: a LaunchAgent in the app bundle, so launchd restarts VaultBar if it crashes (not after Quit).
+    static let agentLabel = "com.padina.vaultbar.agent"
+    private let agent = SMAppService.agent(plistName: "\(AppController.agentLabel).plist")
+    /// launchd sets XPC_SERVICE_NAME to the job label in the copy it starts.
+    private let isAgentInstance = ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == AppController.agentLabel
 
     override init() { super.init() }
 
@@ -44,11 +51,11 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             }
         } catch {
             alert("VaultBar can't read its config", "\(Config.url.path)\n\n\(error.localizedDescription)\n\nFix or delete the file, then reopen VaultBar.")
-            exit(1)
+            exit(0) // not 1: the LaunchAgent would restart straight into the same alert
         }
         if let problem = config.validate() {
             alert("VaultBar config is invalid", "\(Config.url.path)\n\n\(problem)")
-            exit(1)
+            exit(0)
         }
     }
 
@@ -66,8 +73,13 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             MainActor.assumeIsolated { self.lockForSleep() }
         }
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
+            // Covers mounts and ejects from anywhere (Terminal hdiutil, Finder Eject); once more a second later
+            // in case hdiutil info lags the notification.
             workspace.addObserver(forName: name, object: nil, queue: .main) { _ in
-                MainActor.assumeIsolated { self.refresh() }
+                MainActor.assumeIsolated {
+                    self.refresh()
+                    Task { try? await Task.sleep(for: .seconds(1)); self.refresh() }
+                }
             }
         }
         DistributedNotificationCenter.default().addObserver(
@@ -91,6 +103,50 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         refresh()
     }
 
+    /// Quitting with a vault unlocked leaves it unguarded, so ask. Logout/restart/shutdown carry a quit reason
+    /// (macOS unmounts everything then anyway) and go through without asking.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if NSAppleEventManager.shared().currentAppleEvent?.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason)) != nil {
+            return .terminateNow
+        }
+        refresh()
+        let unlocked = config.vaults.filter { mountPoint($0) != nil }
+        guard !unlocked.isEmpty else { return .terminateNow }
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.messageText = "Quit VaultBar?"
+        alert.informativeText = "Auto-lock stops while VaultBar is closed.\n\nUnlocked: \(unlocked.map(\.name).joined(separator: ", "))"
+        alert.addButton(withTitle: "Lock All & Quit")
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel") // Esc
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            for vault in unlocked {
+                guard let mountPoint = mountPoint(vault) else { continue }
+                var result = HDIUtil.detach(mountPoint, force: false)
+                if result.isBusy, confirm("Vault busy — force lock?",
+                                          "\(vault.name) is in use. Unsaved changes in open apps may be lost.", "Force Lock") {
+                    result = HDIUtil.detach(mountPoint, force: true)
+                }
+                guard result.ok else { // still unlocked: stay running so auto-lock keeps guarding it
+                    refresh()
+                    return .terminateCancel
+                }
+                log.notice("locked \(vault.name, privacy: .public): quit")
+            }
+            return .terminateNow
+        case .alertSecondButtonReturn:
+            return .terminateNow
+        default:
+            return .terminateCancel
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Turned off while running as the agent: unregistering earlier would have stopped this process.
+        if !config.launchAtLogin, agent.status == .enabled { try? agent.unregister() }
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
             Task { self.handle(url) }
@@ -104,17 +160,36 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         let anyUnlocked = config.vaults.contains { mountPoint($0) != nil }
         let paused = pause.isActive()
         let state = (anyUnlocked ? "a vault is unlocked" : "vaults locked") + (paused ? ", auto-lock paused" : "")
-        // Bundled notebook icons; `swift run` has no bundle resources, so it falls back to SF Symbols.
-        let image = NSImage(named: paused ? "menubar-paused" : anyUnlocked ? "menubar-unlocked" : "menubar-locked")
+        let image = statusImage(badge: paused ? "menubar-paused" : anyUnlocked ? "menubar-unlocked" : nil)
+            // `swift run` has no bundle resources
             ?? NSImage(systemSymbolName: (anyUnlocked ? "lock.open" : "lock") + (paused ? ".trianglebadge.exclamationmark" : ".fill"),
                        accessibilityDescription: nil)
-        image?.isTemplate = true
         image?.accessibilityDescription = "VaultBar: \(state)"
         statusItem?.button?.image = image
         statusItem?.button?.toolTip = paused ? pauseTitle : nil
     }
 
     private func mountPoint(_ vault: Vault) -> String? { mounted.mountPoint(of: vault) }
+
+    /// Locked: the template notebook. Unlocked / paused: the notebook in the menu bar's text colour plus a colour
+    /// badge (amber open padlock / orange warning), so an open vault stands out.
+    private func statusImage(badge: String?) -> NSImage? {
+        guard let badge else {
+            let locked = NSImage(named: "menubar-locked")
+            locked?.isTemplate = true
+            return locked
+        }
+        guard let notebook = NSImage(named: "menubar-notebook"), let color = NSImage(named: badge) else { return nil }
+        let image = NSImage(size: notebook.size, flipped: false) { rect in
+            notebook.draw(in: rect)
+            NSColor.labelColor.set() // resolved for the menu bar's current appearance at draw time
+            rect.fill(using: .sourceAtop)
+            color.draw(in: rect)
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
 
     // MARK: Status item + menu
 
@@ -214,23 +289,24 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func unlock(_ vault: Vault, error: String? = nil) {
-        guard !prompting else { return }
+        guard !prompting else {
+            if passwordPanel.isVisible { passwordPanel.makeKeyAndOrderFront(nil) } // asked twice: bring it back
+            return
+        }
         prompting = true
-        NSApp.activate()
-        let alert = NSAlert()
-        alert.messageText = "Unlock \(vault.name)"
-        alert.informativeText = error ?? "Enter the vault password."
-        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Unlock") // Return
-        alert.addButton(withTitle: "Cancel") // Esc
-        alert.window.initialFirstResponder = field
-        let response = alert.runModal()
-        // The field's String can't be wiped (see Secret); clear it and keep only the byte copy.
-        let secret = Secret(field.stringValue)
-        field.stringValue = ""
-        guard response == .alertFirstButtonReturn, !secret.isEmpty else {
-            secret.wipe()
+        // Default run-loop mode: runs after a status menu has finished closing, so it can't take focus back.
+        RunLoop.main.perform(inModes: [.default]) {
+            MainActor.assumeIsolated {
+                self.passwordPanel.ask(vault: vault.name, message: error ?? "Enter the vault password.") { secret in
+                    self.attach(vault, secret)
+                }
+            }
+        }
+    }
+
+    private func attach(_ vault: Vault, _ secret: Secret?) {
+        guard let secret, !secret.isEmpty else {
+            secret?.wipe()
             prompting = false
             return
         }
@@ -406,13 +482,18 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func applyLoginItem() {
-        let service = SMAppService.mainApp
+        // 0.1.0 used a plain login item; keeping it too would start two copies at login.
+        if SMAppService.mainApp.status == .enabled {
+            do { try SMAppService.mainApp.unregister() } catch {
+                log.error("old login item: \(error.localizedDescription, privacy: .public)")
+            }
+        }
         do {
             if config.launchAtLogin {
-                if service.status != .enabled { try service.register() }
-            } else if service.status == .enabled {
-                try service.unregister()
-            }
+                if agent.status != .enabled { try agent.register() }
+            } else if agent.status == .enabled, !isAgentInstance {
+                try agent.unregister()
+            } // else this process is the agent: unregistering now would stop it, so applicationWillTerminate does
         } catch {
             log.error("login item: \(error.localizedDescription, privacy: .public)")
         }

@@ -45,9 +45,9 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.1.1</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
@@ -65,6 +65,36 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 Padina</string>
+</dict>
+</plist>
+PLIST
+
+# Login item (SMAppService.agent): launchd restarts VaultBar after a crash, but not after Quit (exit 0).
+mkdir -p "$CONTENTS_DIR/Library/LaunchAgents"
+cat > "$CONTENTS_DIR/Library/LaunchAgents/$BUNDLE_ID.agent.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$BUNDLE_ID.agent</string>
+    <key>BundleProgram</key>
+    <string>Contents/MacOS/$APP_NAME</string>
+    <key>AssociatedBundleIdentifiers</key>
+    <array>
+        <string>$BUNDLE_ID</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
 </dict>
 </plist>
 PLIST

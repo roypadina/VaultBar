@@ -41,10 +41,14 @@ The password is never stored anywhere.
   sync to a cloud (iCloud Drive, Desktop & Documents, `~/Library/CloudStorage`, Syncthing, Synology Drive).
 - **Add Existing Vault…** for any encrypted `.sparsebundle` or `.dmg` (unencrypted images are rejected).
 - **URL scheme** and optional **Raycast Script Commands**.
-- **Launch at login**, no Dock icon.
+- **Always running**: the login item is a LaunchAgent inside the app, so macOS starts VaultBar at login and
+  restarts it if it ever crashes (not after you choose Quit). Only one copy runs at a time. No Dock icon.
+- **Quit asks first** while a vault is unlocked, since auto-lock stops while VaultBar is closed:
+  **Lock All & Quit**, **Quit** or **Cancel**.
 
-Menu bar icon: a notebook with a closed padlock (all locked), an open padlock (a vault is unlocked), or a warning
-badge (auto-lock paused).
+Menu bar icon: a monochrome notebook with a closed padlock when everything is locked; an **amber open padlock** as
+soon as any vault is unlocked (however it was mounted: VaultBar, Finder, Terminal); an **orange warning badge** while
+auto-lock is paused.
 
 ## Install
 
@@ -69,7 +73,8 @@ unzip it and move `VaultBar.app` to `/Applications`.
 
 1. Click the menu bar icon → **New Vault…** (or **Add Existing Vault…**).
 2. **Save the password in your password manager first.** There is no recovery key.
-3. Left-click the icon to unlock (type the password, Enter) or lock. The vault mounts in Finder like any disk.
+3. Left-click the icon to unlock or lock. The password prompt is ready to type right away (also when opened from
+   Raycast or a `vaultbar://` link); Enter unlocks, Esc cancels. The vault mounts in Finder like any disk.
 4. Once per new vault, stop Spotlight from indexing it (VaultBar shows the command with a Copy button):
    `sudo mdutil -i off "/Volumes/<volume name>"`.
 
@@ -149,7 +154,7 @@ from `Assets/icons/*.svg` (needs `brew install librsvg`). An end-to-end test wit
 brew uninstall --zap --cask vaultbar
 ```
 
-Or quit it, drag `/Applications/VaultBar.app` to the Trash, remove it from Login Items, and delete
+Or turn off **Launch at login** in Settings, quit it, drag `/Applications/VaultBar.app` to the Trash, and delete
 `~/.config/vaultbar`. Your vault images stay where they are.
 
 ## Support
