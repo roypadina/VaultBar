@@ -8,7 +8,7 @@ private let forceSoonCategory = "force-soon"
 /// are denied, everything here silently does nothing.
 extension AppController: UNUserNotificationCenterDelegate {
     /// No bundle (`swift run`) means no notification center; `UNUserNotificationCenter.current()` would throw.
-    private var canNotify: Bool { Bundle.main.bundleIdentifier != nil }
+    private var canNotify: Bool { Bundle.main.bundleIdentifier != nil && !Instance.isHeadless }
 
     func setUpNotifications() {
         guard canNotify else { return }

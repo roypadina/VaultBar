@@ -31,11 +31,15 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private var windows: [String: NSWindow] = [:]
     private lazy var passwordPanel = PasswordPanel()
 
-    /// Login item: a LaunchAgent in the app bundle, so launchd restarts VaultBar if it crashes (not after Quit).
-    static let agentLabel = "com.padina.vaultbar.agent"
-    private let agent = SMAppService.agent(plistName: "\(AppController.agentLabel).plist")
-    /// launchd sets XPC_SERVICE_NAME to the job label in the copy it starts.
-    private let isAgentInstance = ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == AppController.agentLabel
+    /// This copy was started by the login agent (see `LoginAgent`).
+    private let isAgentInstance = Instance.isAgentCopy
+    /// The login agent's launchd job is loaded (checked after `applyLoginItem`).
+    private var loginAgentLoaded = false
+    /// A hand-off or update takeover in progress (see `Succession`); this copy keeps running until it completes.
+    private var succession: Task<Void, Never>?
+    private var nextSuccessionAttempt = Date.distantPast
+    /// Installing or removing the login agent; no hand-off until it's done.
+    private var registering = false
 
     override init() { super.init() }
 
@@ -67,12 +71,19 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installEditMenu()
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.target = self
-        item.button?.action = #selector(statusItemClicked)
-        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        statusItem = item
-        applyLoginItem(refreshRegistration: !isAgentInstance)
+        if !Instance.isHeadless {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            item.button?.target = self
+            item.button?.action = #selector(statusItemClicked)
+            item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            statusItem = item
+        }
+        let loginItem = applyLoginItem()
+        Task {
+            await loginItem.value
+            try? await Task.sleep(for: .seconds(2))
+            handOffIfIdle()
+        }
 
         let workspace = NSWorkspace.shared.notificationCenter
         workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
@@ -117,21 +128,31 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         setUpNotifications()
         applyPanicHotkey()
         syncScripts() // idempotent; brings scripts added in an update without pressing Regenerate
-        Task { try? await Task.sleep(for: .seconds(2)); handOffIfIdle() }
     }
 
+    // MARK: Succession (always one copy running)
+
     /// Started by Finder, `open` or a link while the login agent is enabled: once idle, let launchd run the
-    /// supervised copy instead (it restarts after a crash). Waiting until nothing is in progress means a
-    /// `vaultbar://` action that launched this copy finishes here first, so it is never lost.
+    /// supervised copy instead (it restarts after a crash). A `vaultbar://` action that launched this copy finishes
+    /// here first. This copy exits only after the agent copy has acknowledged and is alive; if launchd doesn't
+    /// start it within 20 s, this copy stays and tries again later.
     private func handOffIfIdle() {
-        guard canHandOff(isAgent: isAgentInstance, handOffDisabled: CommandLine.arguments.contains("--no-handoff"),
-                         launchAtLogin: config.launchAtLogin, agentEnabled: agent.status == .enabled,
+        guard succession == nil, !registering, Date() >= nextSuccessionAttempt,
+              canHandOff(isAgent: isAgentInstance, handOffDisabled: CommandLine.arguments.contains("--no-handoff"),
+                         launchAtLogin: config.launchAtLogin, agentEnabled: loginAgentLoaded,
                          activity: activity) else { return }
-        // The helper starts the agent after this copy has exited (else the agent would see a rival and quit),
-        // then checks that VaultBar runs and otherwise reopens this app without a hand-off.
-        guard spawnHelper(HelperScript.handOff(uid: getuid(), label: Self.agentLabel)) else { return }
-        log.notice("handing off to the login agent")
-        exit(0)
+        succession = Task {
+            let service = LoginAgent.service
+            _ = await handOver(timeout: Succession.handOffTimeout, what: "hand-off to the login agent") { elapsed, done in
+                if let at = Succession.handOffKickstarts.first(where: { $0 <= elapsed && !done.contains($0) }) {
+                    let result = await self.run("/bin/launchctl", ["kickstart", service])
+                    log.notice("hand-off: launchctl kickstart \(service, privacy: .public) (exit \(result.status))")
+                    return at
+                }
+                return nil
+            }
+            succession = nil
+        }
     }
 
     /// The version this process runs, read at launch; nil without a bundle (`swift run`).
@@ -143,15 +164,50 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         return "\(short) (\(info["CFBundleVersion"] as? String ?? "?"))"
     }
 
-    /// An upgrade (brew) replaced or moved the bundle under this process: once idle, open the new copy and exit 0
-    /// (so launchd doesn't restart this one); the new copy refreshes the login agent and hands off to it.
+    /// An upgrade (brew) replaced the bundle under this process: once idle, start the new copy and exit only after
+    /// it has acknowledged and is alive (it then refreshes the login agent and hands off). While the bundle can't
+    /// be read (mid-move), keep running and check again on the next tick.
     private func relaunchIfUpdated() {
-        guard let runningVersion else { return }
+        guard succession == nil, let runningVersion, Date() >= nextSuccessionAttempt else { return }
         let onDisk = Self.version(of: Bundle.main.bundleURL)
-        guard shouldRelaunchForUpdate(running: runningVersion, onDisk: onDisk, activity: activity),
-              spawnHelper(HelperScript.relaunch(), Bundle.main.bundlePath) else { return }
-        log.notice("update detected \(runningVersion, privacy: .public) → \(onDisk ?? "bundle moved away", privacy: .public)")
-        exit(0)
+        guard shouldRelaunchForUpdate(running: runningVersion, onDisk: onDisk, activity: activity), let onDisk else { return }
+        log.notice("update detected \(runningVersion, privacy: .public) → \(onDisk, privacy: .public)")
+        let bundle = Bundle.main.bundlePath
+        succession = Task {
+            _ = await handOver(timeout: Succession.updateTimeout, what: "update to \(onDisk)") { _, done in
+                guard done.isEmpty else { return nil }
+                let result = await self.run("/usr/bin/open", ["-n", bundle])
+                log.notice("update: started the new copy (open exit \(result.status))")
+                return 0
+            }
+            succession = nil
+        }
+    }
+
+    /// The predecessor side of `Succession`: write the marker, `start` the successor (called every 200 ms with the
+    /// elapsed time and the start times already used; returns the time it used, if any), and exit 0 as soon as the
+    /// successor has acknowledged and is alive and nothing is in progress here. Returns false after `timeout`.
+    private func handOver(timeout: TimeInterval, what: String,
+                          start: (TimeInterval, Set<TimeInterval>) async -> TimeInterval?) async -> Bool {
+        let began = Date()
+        Instance.remove("handoff-ack")
+        Instance.write("handoff", Succession.markerText(pid: getpid(), date: began))
+        var started = Set<TimeInterval>()
+        while Date().timeIntervalSince(began) < timeout {
+            if let used = await start(Date().timeIntervalSince(began), started) { started.insert(used) }
+            let ack = Instance.read("handoff-ack").flatMap(Succession.parseAck)
+            if let ack, Succession.mayExit(ack: ack, myPID: getpid(), successorAlive: Instance.isAlive(ack.successor),
+                                           activity: activity) {
+                log.notice("\(what, privacy: .public): pid \(ack.successor) is taking over, exiting")
+                exit(0)
+            }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        Instance.remove("handoff")
+        Instance.remove("handoff-ack")
+        nextSuccessionAttempt = Date().addingTimeInterval(120)
+        log.error("\(what, privacy: .public): no successor within \(Int(timeout)) s; staying, will retry in 2 min")
+        return false
     }
 
     private var activity: Activity {
@@ -159,20 +215,9 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
                  uiOpen: NSApp.modalWindow != nil || statusItem?.menu != nil || windows.values.contains(where: \.isVisible))
     }
 
-    /// Runs `/bin/sh -c script sh args…` detached, in a new session, so launchd's clean-up of this app's process
-    /// group doesn't take it down when this copy exits. `$1` defaults to this app's bundle path.
-    private func spawnHelper(_ script: String, _ args: String...) -> Bool {
-        var attributes: posix_spawnattr_t?
-        posix_spawnattr_init(&attributes)
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID))
-        var pid: pid_t = 0
-        let words = ["/bin/sh", "-c", script, "sh"] + (args.isEmpty ? [Bundle.main.bundlePath] : args)
-        let argv: [UnsafeMutablePointer<CChar>?] = words.map { strdup($0) } + [nil]
-        let spawned = posix_spawn(&pid, "/bin/sh", nil, &attributes, argv, environ)
-        argv.forEach { free($0) }
-        posix_spawnattr_destroy(&attributes)
-        if spawned != 0 { log.error("helper failed to start: \(spawned)") }
-        return spawned == 0
+    /// A tool run off the main thread that, unlike `background`, doesn't count as work in progress.
+    private func run(_ path: String, _ args: [String]) async -> ToolResult {
+        await Task.detached { Tool.run(path, args) }.value
     }
 
     /// Quitting with a vault unlocked leaves it unguarded, so ask. Logout/restart/shutdown carry a quit reason
@@ -215,8 +260,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Turned off while running as the agent: unregistering earlier would have stopped this process.
-        if !config.launchAtLogin, agent.status == .enabled { try? agent.unregister() }
+        // Turned off while running as the agent copy: removing it earlier would have stopped this process.
+        if !config.launchAtLogin, isAgentInstance { LoginAgent.remove() }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -273,15 +318,17 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     // MARK: Status item + menu
 
     @objc private func statusItemClicked() {
+        // Control-click must open the menu like a right-click. Use the live modifier state as well as the event's:
+        // the status button's mouse-up doesn't reliably carry the Control flag.
         let event = NSApp.currentEvent
-        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
-            showMenu()
-        } else if event?.modifierFlags.contains(.option) == true {
-            lockAll() // ⌥-click: clean, asks before forcing
-        } else if let vault = config.vault(named: nil) {
-            perform(.toggle, on: vault, reason: "user")
-        } else {
-            showMenu()
+        let flags = (event?.modifierFlags ?? []).union(NSEvent.modifierFlags)
+        let right = event?.type == .rightMouseUp || event?.type == .rightMouseDown || (event?.buttonNumber ?? 0) == 1
+        let defaultVault = config.vault(named: nil)
+        switch StatusClick.action(rightButton: right, control: flags.contains(.control), option: flags.contains(.option),
+                                  hasDefault: defaultVault != nil) {
+        case .menu: showMenu()
+        case .lockAll: lockAll() // ⌥-click: clean, asks before forcing
+        case .toggleDefault: if let defaultVault { perform(.toggle, on: defaultVault, reason: "user") }
         }
     }
 
@@ -420,9 +467,9 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         // Default run-loop mode: runs after a status menu has finished closing, so it can't take focus back.
         RunLoop.main.perform(inModes: [.default]) {
             MainActor.assumeIsolated {
-                self.passwordPanel.ask(vault: vault.name + (readOnly ? " (read-only)" : ""),
-                                       message: error ?? "Enter the vault password.") { secret in
-                    self.attach(vault, secret, thenOpen: thenOpen, readOnly: readOnly)
+                self.passwordPanel.ask(vault: vault.name, readOnly: readOnly,
+                                       message: error ?? "Enter the vault password.") { secret, chosenReadOnly in
+                    self.attach(vault, secret, thenOpen: thenOpen, readOnly: chosenReadOnly) // a retry keeps it
                 }
             }
         }
@@ -667,27 +714,33 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
-    private func applyLoginItem(refreshRegistration: Bool = false) {
+    /// Launch and the Settings toggle: install (or remove) the login agent, and retire the login items of older
+    /// versions. The agent copy never reloads its own job; turning it off there takes effect at quit.
+    @discardableResult
+    private func applyLoginItem() -> Task<Void, Never> {
         // 0.1.0 used a plain login item; keeping it too would start two copies at login.
         if SMAppService.mainApp.status == .enabled {
             do { try SMAppService.mainApp.unregister() } catch {
                 log.error("old login item: \(error.localizedDescription, privacy: .public)")
             }
         }
-        do {
-            if config.launchAtLogin {
-                let before = agent.status
-                // An upgrade replaces the bundle under the registration, which then points at nothing (launchd:
-                // "Could not find … Contents/MacOS/VaultBar"). Registering again from this bundle repairs it.
-                // Safe: the single-instance guard means no agent copy is running now.
-                if refreshRegistration, before != .notRegistered { try? agent.unregister() }
-                if refreshRegistration || agent.status != .enabled { try agent.register() }
-                log.notice("login agent: \(before.rawValue) -> \(self.agent.status.rawValue) (1 = enabled)")
-            } else if agent.status == .enabled, !isAgentInstance {
-                try agent.unregister()
-            } // else this process is the agent: unregistering now would stop it, so applicationWillTerminate does
-        } catch {
-            log.error("login item: \(error.localizedDescription, privacy: .public)")
+        let on = config.launchAtLogin, isAgent = isAgentInstance, executable = Bundle.main.executablePath ?? ""
+        registering = true
+        return Task {
+            let problem = await Task.detached { () -> String? in
+                if on { return isAgent ? nil : LoginAgent.install(executable: executable) }
+                if !isAgent { LoginAgent.remove() }
+                return nil
+            }.value
+            await LoginAgent.removeSMAppServiceAgent()
+            loginAgentLoaded = await Task.detached { LoginAgent.isLoaded }.value
+            if let problem {
+                log.error("login agent: \(problem, privacy: .public)")
+            } else {
+                let what = !on ? "removed" : isAgent ? "running this copy" : "installed"
+                log.notice("login agent \(what, privacy: .public) (loaded: \(self.loginAgentLoaded))")
+            }
+            registering = false
         }
     }
 

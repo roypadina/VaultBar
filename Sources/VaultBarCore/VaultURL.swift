@@ -66,3 +66,16 @@ public enum VaultURL {
     static let unreserved = CharacterSet(charactersIn:
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 }
+
+/// What a click on the menu bar icon does.
+public enum StatusClick: Equatable, Sendable {
+    case toggleDefault, menu, lockAll
+
+    /// Right-click or Control-click: the menu. ⌥-click: Lock All. A plain click toggles the default vault (the menu
+    /// when there is none).
+    public static func action(rightButton: Bool, control: Bool, option: Bool, hasDefault: Bool) -> StatusClick {
+        if rightButton || control { return .menu }
+        if option { return .lockAll }
+        return hasDefault ? .toggleDefault : .menu
+    }
+}

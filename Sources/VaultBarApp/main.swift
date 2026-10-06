@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 import VaultBarCore
 
@@ -25,6 +26,28 @@ if arguments.count == 2, arguments[0] == "--render-settings" {
     exit(0)
 }
 
+// `--unregister-login-item [--force]` (also via `vaultbar`): remove the login agent and exit. Removing it stops a copy
+// launchd is running without the Quit prompt, so every mounted vault is locked first; a busy one is only
+// force-locked with --force, otherwise nothing is removed (exit 1). For uninstalling.
+if arguments.first == "--unregister-login-item", arguments.count <= 2, arguments.count == 1 || arguments[1] == "--force" {
+    let config = (try? Config.load()) ?? Config.seed
+    let report = UnregisterLock.lockAll(config.vaults, mounted: HDIUtil.mounted(), force: arguments.count == 2,
+                                        detach: HDIUtil.detach)
+    for name in report.locked { print("locked \(name)") }
+    guard report.mayUnregister else {
+        for failure in report.stillUnlocked {
+            CommandLineTool.printError("couldn't lock \(failure.vault): \(failure.reason)")
+        }
+        CommandLineTool.printError("login agent not removed")
+        exit(1)
+    }
+    LoginAgent.remove()
+    let old = SMAppService.agent(plistName: Instance.smAppServiceLabel + ".plist")
+    if old.status == .enabled || old.status == .requiresApproval { try? old.unregister() }
+    print("login agent \(Instance.loginLabel) removed")
+    exit(0)
+}
+
 // The `vaultbar` command line: run as `vaultbar` (the cask's symlink), or with a subcommand. `--status` is the
 // older spelling of `status`.
 let calledAs = CommandLine.arguments.first.map { ($0 as NSString).lastPathComponent } ?? ""
@@ -41,31 +64,48 @@ guard arguments.allSatisfy({ $0.hasPrefix("-psn_") || $0 == "--no-handoff" }) el
     exit(CLIExit.usage.rawValue)
 }
 
-// One VaultBar at a time. At login the LaunchAgent copy and a Finder / `open` / login-window-restored copy can
-// start together: the first to take the lock wins, the other exits 0 (so launchd doesn't restart it either).
-// The bundle-id check also catches an older version without the lock. A copy that is exiting (a hand-off) can
-// linger in the running-apps list for a moment, so dead or terminated pids don't count, and the agent copy
-// retries for up to 3 s before giving up.
-let isAgentCopy = ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == AppController.agentLabel
-let instanceLock = open(NSTemporaryDirectory() + "com.padina.vaultbar.lock", O_CREAT | O_RDWR, 0o600)
-func rivalReason() -> String? {
-    let rival = NSRunningApplication.runningApplications(withBundleIdentifier: "com.padina.vaultbar").first {
-        $0.processIdentifier != getpid() && !$0.isTerminated && (kill($0.processIdentifier, 0) == 0 || errno == EPERM)
+// One copy at a time, and never zero (see `Succession`). Another copy that is alive (not a terminated pid still
+// listed by LaunchServices) or holds the instance lock means this one doesn't start, unless that copy has written a
+// fresh hand-off marker naming itself: then this copy acknowledges and waits for it to exit, and takes over.
+// The agent copy also retries for 3 s, so a copy that is just exiting doesn't make it give up.
+let kind = Instance.isAgentCopy ? "agent" : "non-agent"
+let instanceLock = open(Instance.path("lock"), O_CREAT | O_RDWR, 0o600)
+func rivalPID() -> Int32? {
+    NSRunningApplication.runningApplications(withBundleIdentifier: Instance.bundleID).first {
+        $0.processIdentifier != getpid() && !$0.isTerminated && Instance.isAlive($0.processIdentifier)
+    }?.processIdentifier
+}
+let launched = Date()
+var predecessor: Int32?
+while true {
+    let rival = rivalPID()
+    if rival == nil, instanceLock < 0 || flock(instanceLock, LOCK_EX | LOCK_NB) == 0 { break }
+    let marker = Instance.read("handoff").flatMap(Succession.parseMarker)
+    let waited = Date().timeIntervalSince(launched)
+    if let marker, Succession.shouldWait(for: marker, markerPIDAlive: Instance.isAlive(marker.pid), rivalPID: rival, now: Date()) {
+        if predecessor != marker.pid {
+            predecessor = marker.pid
+            Instance.write("handoff-ack", Succession.ackText(successor: getpid(), predecessor: marker.pid))
+            log.notice("\(kind, privacy: .public) copy pid \(getpid()): taking over from pid \(marker.pid), waiting for it to exit")
+        }
+        if waited > Succession.successorWait {
+            log.notice("\(kind, privacy: .public) copy pid \(getpid()): pid \(marker.pid) didn't hand over, not starting")
+            Instance.remove("handoff-ack")
+            exit(0)
+        }
+    } else if waited >= (Instance.isAgentCopy ? 3 : 0) {
+        let reason = rival.map { "another copy is running (pid \($0))" } ?? "the instance lock is held"
+        log.notice("not starting (\(kind, privacy: .public) copy, pid \(getpid())): \(reason, privacy: .public)")
+        exit(0)
     }
-    if let rival { return "another copy is running (pid \(rival.processIdentifier))" }
-    if instanceLock >= 0 && flock(instanceLock, LOCK_EX | LOCK_NB) != 0 { return "the instance lock is held" }
-    return nil
+    usleep(100_000)
 }
-var rival = rivalReason()
-for _ in 0..<(isAgentCopy ? 12 : 0) where rival != nil {
-    usleep(250_000)
-    rival = rivalReason()
+if let predecessor {
+    Instance.remove("handoff")
+    Instance.remove("handoff-ack")
+    log.notice("\(kind, privacy: .public) copy pid \(getpid()) took over from pid \(predecessor)")
 }
-if let rival {
-    log.notice("not starting (\(isAgentCopy ? "agent" : "non-agent", privacy: .public) copy, pid \(getpid())): \(rival, privacy: .public)")
-    exit(0)
-}
-log.notice("\(isAgentCopy ? "agent" : "non-agent", privacy: .public) copy started, pid \(getpid())")
+log.notice("\(kind, privacy: .public) copy started, pid \(getpid())")
 
 let app = NSApplication.shared
 let controller = AppController()

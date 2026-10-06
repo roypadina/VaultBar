@@ -49,8 +49,14 @@ public struct Config: Codable, Equatable, Sendable {
     /// The panic hotkey force-locks busy vaults instead of asking.
     public var panicForces = true
 
-    public static let url = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".config/vaultbar/vaults.json")
+    /// `~/.config/vaultbar/vaults.json`, or `<VBConfigDirectory>/vaults.json` when the app bundle's Info.plist sets
+    /// that key (the launchd test build keeps its config in a scratch folder).
+    public static var url: URL {
+        if let directory = Bundle.main.object(forInfoDictionaryKey: "VBConfigDirectory") as? String {
+            return URL(fileURLWithPath: directory).appendingPathComponent("vaults.json")
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/vaultbar/vaults.json")
+    }
 
     /// First run: no vaults yet; the menu offers New Vault… and Add Existing Vault….
     public static let seed = Config(

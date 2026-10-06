@@ -205,3 +205,41 @@ public enum MountFolder {
         vaults.filter { mounted.mount(of: $0) == nil && !attaching.contains($0.name) }.compactMap(\.expandedMountPoint)
     }
 }
+
+/// `--unregister-login-item`: removing the login agent stops the running copy without its Quit prompt, so every
+/// mounted vault is locked first, in-process (the app may not be running).
+public enum UnregisterLock {
+    public struct Report: Equatable, Sendable {
+        public var locked: [String] = []
+        /// Vault name and why it is still unlocked.
+        public var stillUnlocked: [Failure] = []
+        public var mayUnregister: Bool { stillUnlocked.isEmpty }
+    }
+
+    public struct Failure: Equatable, Sendable {
+        public let vault: String
+        public let reason: String
+    }
+
+    /// Clean detach for each mounted vault; a busy one is force-detached only with `force`. `detach` is
+    /// `HDIUtil.detach` (injected for tests). Private mount folders of locked vaults are removed.
+    public static func lockAll(_ vaults: [Vault], mounted: [String: Mount], force: Bool,
+                               detach: (String, Bool) -> ToolResult) -> Report {
+        var report = Report()
+        for vault in vaults {
+            guard let mountPoint = mounted.mountPoint(of: vault) else { continue }
+            var result = detach(mountPoint, false)
+            if !result.ok, result.isBusy, force { result = detach(mountPoint, true) }
+            if result.ok {
+                if !mountPoint.hasPrefix("/Volumes/") { MountFolder.remove(mountPoint) }
+                if let folder = vault.expandedMountPoint { MountFolder.remove(folder) }
+                report.locked.append(vault.name)
+            } else if result.isBusy {
+                report.stillUnlocked.append(Failure(vault: vault.name, reason: "busy (a file is open); close it, or use --force"))
+            } else {
+                report.stillUnlocked.append(Failure(vault: vault.name, reason: result.output.isEmpty ? "detach failed" : result.output))
+            }
+        }
+        return report
+    }
+}

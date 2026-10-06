@@ -32,6 +32,11 @@ rebuilds. A self-signed code-signing certificate avoids that.
 **Test with throwaway vaults only.** `VAULTBAR_E2E=1 swift test --filter endToEnd` creates, mounts and deletes a
 test vault in `.scratch/` (volume `VaultBarTest`).
 
+`Scripts/e2e_launchd.sh` checks that a VaultBar copy is always running through a hand-off to the login agent, an
+upgrade (bundle replaced the way brew does) and a crash, sampling every 200 ms. It builds a separate headless variant
+(`com.padina.vaultbar.e2e`, executable `VaultBarE2E`, config in `.scratch/`, no vaults, no menu bar item, no URL
+scheme), installs its login agent and removes everything again at the end.
+
 ## Layout
 
 - `Sources/VaultBarCore` — pure, tested logic: config, `hdiutil` runner and parsing, URL routing, Raycast scripts,

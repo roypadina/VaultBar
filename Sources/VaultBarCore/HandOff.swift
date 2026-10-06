@@ -27,32 +27,104 @@ public func canHandOff(isAgent: Bool, handOffDisabled: Bool, launchAtLogin: Bool
     !isAgent && !handOffDisabled && launchAtLogin && agentEnabled && activity.isIdle
 }
 
-/// Whether the bundle on disk is no longer the one running (an upgrade replaced it, or moved it away so its
-/// Info.plist can't be read: `onDisk` nil) and it's a good moment to restart into it.
+/// Whether a newer bundle has replaced the one running and it's a good moment to start it. A bundle that can't be
+/// read (`onDisk` nil: an upgrade is moving it) is waited for, never "relaunched" into nothing.
 public func shouldRelaunchForUpdate(running: String, onDisk: String?, activity: Activity) -> Bool {
-    onDisk != running && activity.isIdle
+    guard let onDisk else { return false }
+    return onDisk != running && activity.isIdle
 }
 
-/// `/bin/sh -c` scripts for the detached helper. The app bundle path is passed as `$1`, never spliced in.
-public enum HelperScript {
-    /// Start the login agent once this copy has exited, and check that the agent itself runs (`launchctl print`
-    /// shows its `pid =`): `kickstart` returns 0 even when the spawn then fails. Two tries, 5 s each, then fall back
-    /// to opening the app without a hand-off, so VaultBar never ends up not running.
-    public static func handOff(uid: UInt32, label: String) -> String {
-        let service = "gui/\(uid)/\(label)"
-        let wait = "for i in 1 2 3 4 5; do sleep 1; "
-            + "/bin/launchctl print \(service) 2>/dev/null | /usr/bin/grep -q '^[[:space:]]*pid = ' && exit 0; done; "
-        return "sleep 1; /bin/launchctl kickstart \(service); " + wait
-            + "/bin/launchctl kickstart \(service); " + wait
-            + #"/usr/bin/open -n "$1" --args --no-handoff"#
+/// Zero-gap succession between two copies of the app: at every moment at least one copy runs. The copy that is
+/// leaving (the predecessor) writes a marker naming itself and starts its successor; the successor acknowledges and
+/// waits for the predecessor to exit, instead of quitting as a second copy would; the predecessor exits only once
+/// that acknowledgement exists and its writer is alive.
+public enum Succession {
+    public struct Marker: Equatable, Sendable {
+        public let pid: Int32
+        public let date: Date
     }
 
-    /// After an upgrade: wait (up to a minute) until the new bundle is in place, then open it. That copy refreshes
-    /// the login agent registration and hands off. By path, so a moved-away old copy can't be picked; if the
-    /// bundle never comes back (the app was moved elsewhere), let LaunchServices find it by bundle id.
-    public static func relaunch(waitSeconds: Int = 60) -> String {
-        #"sleep 1; for i in $(/usr/bin/seq "# + "\(waitSeconds)"
-            + #"); do [ -f "$1/Contents/Info.plist" ] && exec /usr/bin/open -n "$1"; sleep 1; done; "#
-            + "exec /usr/bin/open -n -b com.padina.vaultbar"
+    public struct Ack: Equatable, Sendable {
+        public let successor: Int32
+        public let predecessor: Int32
+    }
+
+    /// A successor ignores markers older than this.
+    public static let markerLifetime: TimeInterval = 90
+    /// How long a successor waits for its predecessor to exit before giving up (it then exits, the predecessor stays).
+    public static let successorWait: TimeInterval = 15
+    /// Hand-off to the login agent: when to (re)ask launchd to start it, and when to give up and stay.
+    public static let handOffKickstarts: [TimeInterval] = [0, 5, 10, 15]
+    public static let handOffTimeout: TimeInterval = 20
+    /// Update: how long the old copy waits for the new one to acknowledge.
+    public static let updateTimeout: TimeInterval = 60
+
+    public static func markerText(pid: Int32, date: Date) -> String { "\(pid) \(date.timeIntervalSince1970)" }
+
+    public static func parseMarker(_ text: String) -> Marker? {
+        let parts = text.split(separator: " ")
+        guard parts.count == 2, let pid = Int32(parts[0]), let time = Double(parts[1]) else { return nil }
+        return Marker(pid: pid, date: Date(timeIntervalSince1970: time))
+    }
+
+    public static func ackText(successor: Int32, predecessor: Int32) -> String { "\(successor) \(predecessor)" }
+
+    public static func parseAck(_ text: String) -> Ack? {
+        let parts = text.split(separator: " ")
+        guard parts.count == 2, let successor = Int32(parts[0]), let predecessor = Int32(parts[1]) else { return nil }
+        return Ack(successor: successor, predecessor: predecessor)
+    }
+
+    /// Successor at launch, finding another copy: wait for it (instead of exiting) when a fresh marker names it and
+    /// it is alive. `rivalPID` nil: only the instance lock says a copy runs.
+    public static func shouldWait(for marker: Marker?, markerPIDAlive: Bool, rivalPID: Int32?, now: Date) -> Bool {
+        guard let marker, markerPIDAlive, now.timeIntervalSince(marker.date) < markerLifetime else { return false }
+        return rivalPID == nil || rivalPID == marker.pid
+    }
+
+    /// Predecessor: exit only once its own successor has acknowledged, is alive, and nothing is in progress here.
+    public static func mayExit(ack: Ack?, myPID: Int32, successorAlive: Bool, activity: Activity) -> Bool {
+        guard let ack, ack.predecessor == myPID, ack.successor != myPID, successorAlive else { return false }
+        return activity.isIdle
+    }
+}
+
+/// The login item: a classic LaunchAgent (`~/Library/LaunchAgents/<label>.plist`) that runs the app's executable
+/// by path. launchd restarts it after a crash (not after Quit, exit 0). Unlike an SMAppService agent, nothing pins
+/// the binary, so an upgraded app at the same path starts without re-registering.
+public enum LoginAgentPlist {
+    public static func data(label: String, executable: String, bundleID: String) -> Data {
+        let plist: [String: Any] = [
+            "Label": label,
+            "ProgramArguments": [executable],
+            "AssociatedBundleIdentifiers": [bundleID],
+            "RunAtLoad": true,
+            "KeepAlive": ["SuccessfulExit": false],
+            "ProcessType": "Interactive",
+            "LimitLoadToSessionType": "Aqua",
+        ]
+        return (try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)) ?? Data()
+    }
+
+    /// The executable an existing plist runs (nil: unreadable).
+    public static func program(in data: Data) -> String? {
+        let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        return (plist?["ProgramArguments"] as? [String])?.first
+    }
+}
+
+/// From `launchctl print gui/<uid>/<label>`.
+public enum LaunchdJob {
+    /// The pid of the job's running process, if any.
+    public static func runningPID(launchctlPrint output: String?) -> Int32? {
+        output.flatMap { value("pid", in: $0) }.flatMap { Int32($0) }
+    }
+
+    static func value(_ key: String, in output: String) -> String? {
+        for line in output.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix(key + " = ") { return String(trimmed.dropFirst(key.count + 3)) }
+        }
+        return nil
     }
 }

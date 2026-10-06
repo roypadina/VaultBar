@@ -2,10 +2,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="VaultBar"
-BUNDLE_ID="com.padina.vaultbar"
+APP_NAME="${APP_NAME:-VaultBar}"
+BUNDLE_ID="${BUNDLE_ID:-com.padina.vaultbar}"
+VERSION="0.2.1"
+BUILD_NUMBER="${BUILD_NUMBER:-6}"
 BUILD_CONFIG="release"
-DIST_DIR="$ROOT_DIR/dist"
+DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
+# TEST_CONFIG_DIR (Scripts/e2e_launchd.sh only): a headless variant with its config there and no URL scheme, so it
+# can never touch real vaults, show up in the menu bar, or take vaultbar:// links.
+TEST_CONFIG_DIR="${TEST_CONFIG_DIR:-}"
 APP_DIR="$DIST_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -27,6 +32,12 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp ".build/$BUILD_CONFIG/VaultBarApp" "$MACOS_DIR/$APP_NAME"
 cp Assets/icons/AppIcon.icns Assets/icons/menubar-*.png "$RESOURCES_DIR/"
 
+if [[ -n "$TEST_CONFIG_DIR" ]]; then
+    EXTRA_KEYS="<key>VBConfigDirectory</key><string>$TEST_CONFIG_DIR</string><key>VBHeadless</key><true/>"
+else
+    EXTRA_KEYS="<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>$BUNDLE_ID</string><key>CFBundleURLSchemes</key><array><string>vaultbar</string></array></dict></array>"
+fi
+
 cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -45,20 +56,10 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.0</string>
+    <string>$VERSION</string>
     <key>CFBundleVersion</key>
-    <string>5</string>
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleURLName</key>
-            <string>$BUNDLE_ID</string>
-            <key>CFBundleURLSchemes</key>
-            <array>
-                <string>vaultbar</string>
-            </array>
-        </dict>
-    </array>
+    <string>$BUILD_NUMBER</string>
+    $EXTRA_KEYS
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>
@@ -69,7 +70,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Login item (SMAppService.agent): launchd restarts VaultBar after a crash, but not after Quit (exit 0).
+# The SMAppService agent of 0.1.1–0.2.0. Not used any more (the login item is ~/Library/LaunchAgents/<id>.login.plist,
+# written by the app); kept so SMAppService can find and unregister registrations made by those versions.
 mkdir -p "$CONTENTS_DIR/Library/LaunchAgents"
 cat > "$CONTENTS_DIR/Library/LaunchAgents/$BUNDLE_ID.agent.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

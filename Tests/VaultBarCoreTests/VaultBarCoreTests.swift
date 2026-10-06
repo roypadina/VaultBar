@@ -285,42 +285,111 @@ struct VaultBarCoreTests {
         #expect(!can(activity: Activity(uiOpen: true)))
     }
 
-    @Test("relaunch for an update only when the bundle changed (or vanished) and nothing is in progress")
+    @Test("relaunch for an update only when a different bundle is in place and nothing is in progress")
     func relaunchForUpdate() {
         #expect(!shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: "0.1.3 (4)", activity: Activity()))
         #expect(shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: "0.1.4 (5)", activity: Activity()))
         #expect(shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: "0.1.3 (5)", activity: Activity()))
-        #expect(shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: nil, activity: Activity())) // moved away
+        #expect(!shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: nil, activity: Activity())) // mid-move: wait
         #expect(!shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: "0.1.4 (5)", activity: Activity(inFlight: 1)))
         #expect(!shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: "0.1.4 (5)", activity: Activity(prompting: true)))
         #expect(!shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: "0.1.4 (5)", activity: Activity(paused: true)))
     }
 
-    @Test("helper scripts: hand-off waits for the agent's own pid, relaunch by path or by bundle id")
-    func helperScripts() throws {
-        let handOff = HelperScript.handOff(uid: 501, label: "com.example.agent")
-        #expect(handOff.hasPrefix("sleep 1; /bin/launchctl kickstart gui/501/com.example.agent; "))
-        #expect(handOff.components(separatedBy: "/bin/launchctl kickstart gui/501/com.example.agent").count == 3) // twice
-        #expect(handOff.contains("/bin/launchctl print gui/501/com.example.agent 2>/dev/null | /usr/bin/grep -q '^[[:space:]]*pid = ' && exit 0"))
-        #expect(!handOff.contains("pgrep")) // any VaultBar isn't enough: it must be the agent
-        #expect(handOff.hasSuffix(#"/usr/bin/open -n "$1" --args --no-handoff"#))
+    @Test("succession: marker and ack round-trip; who waits, who may exit")
+    func succession() {
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let marker = Succession.parseMarker(Succession.markerText(pid: 4242, date: now))
+        #expect(marker == Succession.Marker(pid: 4242, date: now))
+        #expect(Succession.parseMarker("junk") == nil && Succession.parseMarker("12") == nil)
+        let ack = Succession.parseAck(Succession.ackText(successor: 5000, predecessor: 4242))
+        #expect(ack == Succession.Ack(successor: 5000, predecessor: 4242))
+        #expect(Succession.parseAck("5000") == nil)
 
-        // The pid check really matches launchctl's indented "pid = " line and not other lines.
-        let probe = #"printf '%s\n' "$1" | /usr/bin/grep -q '^[[:space:]]*pid = ' && echo yes || echo no"#
-        #expect(Tool.run("/bin/sh", ["-c", probe, "sh", "\tpid = 4242"]).stdout == "yes\n")
-        #expect(Tool.run("/bin/sh", ["-c", probe, "sh", "\tlast exit code = 78: EX_CONFIG"]).stdout == "no\n")
+        // The successor waits for a fresh, alive predecessor that is the rival (or only holds the lock) ...
+        #expect(Succession.shouldWait(for: marker, markerPIDAlive: true, rivalPID: 4242, now: now))
+        #expect(Succession.shouldWait(for: marker, markerPIDAlive: true, rivalPID: nil, now: now))
+        // ... but not for a different rival, a dead pid, a stale marker, or no marker: those make it exit as before.
+        #expect(!Succession.shouldWait(for: marker, markerPIDAlive: true, rivalPID: 777, now: now))
+        #expect(!Succession.shouldWait(for: marker, markerPIDAlive: false, rivalPID: 4242, now: now))
+        #expect(!Succession.shouldWait(for: marker, markerPIDAlive: true, rivalPID: 4242,
+                                       now: now.addingTimeInterval(Succession.markerLifetime)))
+        #expect(!Succession.shouldWait(for: nil, markerPIDAlive: true, rivalPID: 4242, now: now))
 
-        // Run the relaunch script for real with `open` swapped for `echo`, against a temp "bundle".
-        func relaunch(_ bundle: URL) -> String {
-            let script = HelperScript.relaunch(waitSeconds: 1).replacingOccurrences(of: "sleep 1; ", with: "")
-                .replacingOccurrences(of: "/usr/bin/open -n", with: "echo opened")
-            return Tool.run("/bin/sh", ["-c", script, "sh", bundle.path]).stdout
+        // The predecessor exits only for its own, live successor, and only when idle.
+        #expect(Succession.mayExit(ack: ack, myPID: 4242, successorAlive: true, activity: Activity()))
+        #expect(!Succession.mayExit(ack: ack, myPID: 4242, successorAlive: false, activity: Activity()))
+        #expect(!Succession.mayExit(ack: ack, myPID: 9999, successorAlive: true, activity: Activity())) // someone else's
+        #expect(!Succession.mayExit(ack: nil, myPID: 4242, successorAlive: true, activity: Activity()))
+        #expect(!Succession.mayExit(ack: ack, myPID: 4242, successorAlive: true, activity: Activity(prompting: true)))
+        #expect(!Succession.mayExit(ack: Succession.Ack(successor: 4242, predecessor: 4242), myPID: 4242,
+                                    successorAlive: true, activity: Activity()))
+        // Hand-off: kickstart again while waiting, and give up (stay) after the last attempt had time to work.
+        #expect(Succession.handOffKickstarts.first == 0 && Succession.handOffKickstarts.count > 1)
+        #expect(Succession.handOffTimeout > Succession.handOffKickstarts.last!)
+        #expect(Succession.successorWait < Succession.updateTimeout)
+    }
+
+    @Test("login agent plist: runs the executable by path, restarts after a crash only")
+    func loginAgentPlist() throws {
+        let data = LoginAgentPlist.data(label: "com.example.login", executable: "/Applications/Example.app/Contents/MacOS/Example",
+                                        bundleID: "com.example")
+        let plist = try #require(try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
+        #expect(plist["Label"] as? String == "com.example.login")
+        #expect(plist["AssociatedBundleIdentifiers"] as? [String] == ["com.example"])
+        #expect(plist["RunAtLoad"] as? Bool == true)
+        #expect((plist["KeepAlive"] as? [String: Bool]) == ["SuccessfulExit": false])
+        #expect(plist["LimitLoadToSessionType"] as? String == "Aqua")
+        #expect(LoginAgentPlist.program(in: data) == "/Applications/Example.app/Contents/MacOS/Example")
+        #expect(LoginAgentPlist.program(in: Data("junk".utf8)) == nil)
+
+        let running = "gui/501/com.example.login = {\n\tstate = running\n\tpid = 4242\n\tlast exit code = 0\n}"
+        #expect(LaunchdJob.runningPID(launchctlPrint: running) == 4242)
+        #expect(LaunchdJob.runningPID(launchctlPrint: running.replacingOccurrences(of: "\tpid = 4242\n", with: "")) == nil)
+        #expect(LaunchdJob.runningPID(launchctlPrint: nil) == nil)
+    }
+
+    @Test("menu bar clicks: left toggles, right or Control-click opens the menu, ⌥-click locks all")
+    func statusClicks() {
+        func click(right: Bool = false, control: Bool = false, option: Bool = false, hasDefault: Bool = true) -> StatusClick {
+            StatusClick.action(rightButton: right, control: control, option: option, hasDefault: hasDefault)
         }
-        let bundle = try tempDir().appendingPathComponent("My App.app")
-        #expect(relaunch(bundle) == "opened -b com.padina.vaultbar\n") // never came back: by bundle id
-        try FileManager.default.createDirectory(at: bundle.appendingPathComponent("Contents"), withIntermediateDirectories: true)
-        try Data().write(to: bundle.appendingPathComponent("Contents/Info.plist"))
-        #expect(relaunch(bundle) == "opened \(bundle.path)\n")
+        #expect(click() == .toggleDefault)
+        #expect(click(right: true) == .menu)
+        #expect(click(control: true) == .menu)            // Control-click = right-click
+        #expect(click(control: true, option: true) == .menu)
+        #expect(click(option: true) == .lockAll)
+        #expect(click(right: true, option: true) == .menu) // ⌥-right-click: still the menu
+        #expect(click(hasDefault: false) == .menu)
+    }
+
+    @Test("unregister: lock every mounted vault first; busy refuses unless forced")
+    func unregisterLock() {
+        let a = Vault(name: "A", imagePath: "/Users/alice/Vaults/A.sparsebundle")
+        let b = Vault(name: "B", imagePath: "/Users/alice/Vaults/B.sparsebundle")
+        let c = Vault(name: "C", imagePath: "/Users/alice/Vaults/C.sparsebundle") // locked: untouched
+        let mounted = [HDIUtil.resolve(a.imagePath): Mount(path: "/Volumes/A", readOnly: false),
+                       HDIUtil.resolve(b.imagePath): Mount(path: "/Volumes/B", readOnly: false)]
+        let ok = ToolResult(status: 0, stdout: "", output: "")
+        let busy = ToolResult(status: 16, stdout: "", output: "hdiutil: couldn't unmount - Resource busy")
+        var calls: [String] = []
+        let bBusyUntilForced: (String, Bool) -> ToolResult = { path, force in
+            calls.append("\(path) \(force)")
+            return path == "/Volumes/B" && !force ? busy : ok
+        }
+        let clean = UnregisterLock.lockAll([a, b, c], mounted: mounted, force: false, detach: bBusyUntilForced)
+        #expect(clean.locked == ["A"] && !clean.mayUnregister)
+        #expect(clean.stillUnlocked.map(\.vault) == ["B"] && clean.stillUnlocked[0].reason.contains("--force"))
+        #expect(calls == ["/Volumes/A false", "/Volumes/B false"]) // never forced without --force
+        calls = []
+        let forced = UnregisterLock.lockAll([a, b, c], mounted: mounted, force: true, detach: bBusyUntilForced)
+        #expect(forced.locked == ["A", "B"] && forced.mayUnregister)
+        #expect(calls == ["/Volumes/A false", "/Volumes/B false", "/Volumes/B true"]) // clean first, then force
+        let failing = UnregisterLock.lockAll([a], mounted: mounted, force: true) { _, _ in
+            ToolResult(status: 1, stdout: "", output: "hdiutil: detach failed")
+        }
+        #expect(!failing.mayUnregister && failing.stillUnlocked == [UnregisterLock.Failure(vault: "A", reason: "hdiutil: detach failed")])
+        #expect(UnregisterLock.lockAll([a, b], mounted: [:], force: false, detach: { _, _ in ok }).mayUnregister) // nothing mounted
     }
 
     @Test("what each action does: lock, open in Finder, or prompt (and open after) per openAfterUnlock")
@@ -531,6 +600,19 @@ func endToEnd() throws {
     stale.forEach(MountFolder.remove)
     print("e2e after cleanup folder exists=\(fm.fileExists(atPath: folder))")
     #expect(!fm.fileExists(atPath: folder))
+
+    // 8c. --unregister-login-item's locking, for real: busy refuses, --force locks, the private folder goes
+    #expect(MountFolder.prepare(folder) == nil)
+    try #require(HDIUtil.attach(image, mountPoint: folder, hidden: true, secret: Secret(password)).ok)
+    let openFile = try #require(FileHandle(forReadingAtPath: folder + "/hello.txt"))
+    let refused = UnregisterLock.lockAll(config.vaults, mounted: HDIUtil.mounted(), force: false, detach: HDIUtil.detach)
+    print("e2e unregister without --force: locked=\(refused.locked) still=\(refused.stillUnlocked.map(\.vault))")
+    #expect(!refused.mayUnregister && HDIUtil.mounted().mountPoint(of: vault) != nil)
+    let forcedLock = UnregisterLock.lockAll(config.vaults, mounted: HDIUtil.mounted(), force: true, detach: HDIUtil.detach)
+    try openFile.close()
+    print("e2e unregister --force: locked=\(forcedLock.locked) folder exists=\(fm.fileExists(atPath: folder))")
+    #expect(forcedLock.mayUnregister && forcedLock.locked == ["VaultBarTest"])
+    #expect(HDIUtil.mounted().mountPoint(of: vault) == nil && !fm.fileExists(atPath: folder))
 
     // 9. change the password: the new one opens it, the old one no longer does, the data is untouched
     let newPassword = "second pass ü 2"

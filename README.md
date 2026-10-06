@@ -28,11 +28,14 @@ The password is never stored anywhere.
 
 ## Features
 
-- **One click** — left-click the menu bar icon to lock or unlock your default vault. Right-click for every vault
-  (Unlock… / Lock, **Open in Finder** or **Unlock & Open…**), Lock All, New Vault…, Add Existing Vault…, Settings….
+- **One click** — left-click the menu bar icon to lock or unlock your default vault. Right-click (or Control-click)
+  for every vault (Unlock… / Lock, **Open in Finder** or **Unlock & Open…**), Lock All, New Vault…, Add Existing
+  Vault…, Settings….
 - **Open in Finder after unlocking** (optional setting), or per vault with Open / `vaultbar://open`.
 - **Read-only unlock**: per vault by default, or once with ⌥ in the menu ("Unlock Read-Only…"), `?readonly=1` or
-  `vaultbar unlock --readonly`. Nothing can be written, and a forced lock can't lose anything.
+  `vaultbar unlock --readonly`. The password prompt shows the mode ("Work — Read-Only" with a blue icon, "Work — Read & Write"
+  with an amber one) with a **Read & Write | Read-Only** switch you can flip before pressing Enter (⌘R). Nothing can be written
+  to a read-only mount, and a forced lock can't lose anything.
 - **Private mount**: per vault, mount at a folder you choose (e.g. `~/Vaults/mnt/Work`) instead of `/Volumes`, and
   optionally **hidden from Finder** (`-nobrowse`: not in the sidebar, Desktop or file pickers). The folder exists
   only while the vault is unlocked: VaultBar creates it (mode 700) right before unlocking and removes it after
@@ -60,9 +63,11 @@ The password is never stored anywhere.
   sync to a cloud (iCloud Drive, Desktop & Documents, `~/Library/CloudStorage`, Syncthing, Synology Drive).
 - **Add Existing Vault…** for any encrypted `.sparsebundle` or `.dmg` (unencrypted images are rejected).
 - **URL scheme** and optional **Raycast Script Commands**.
-- **Always running**: the login item is a LaunchAgent inside the app, so macOS starts VaultBar at login and
-  restarts it if it ever crashes (not after you choose Quit). Only one copy runs at a time; if you start VaultBar
-  yourself (Finder, a link), it hands over to that supervised copy as soon as it's idle. No Dock icon.
+- **Always running**: the login item is a LaunchAgent (`~/Library/LaunchAgents/com.padina.vaultbar.login.plist`),
+  so macOS starts VaultBar at login and restarts it if it ever crashes (not after you choose Quit). Exactly one copy
+  runs, and (from 0.2.1 on) never zero: when one copy hands over to another (a copy you started yourself handing
+  over to the supervised one once it's idle, or an upgrade), the old copy quits only after the new one has confirmed
+  it is running. No Dock icon.
 - **Quit asks first** while a vault is unlocked, since auto-lock stops while VaultBar is closed:
   **Lock All & Quit**, **Quit** or **Cancel**.
 
@@ -89,9 +94,10 @@ xattr -dr com.apple.quarantine /Applications/VaultBar.app
 Or download `VaultBar.zip` from the [latest release](https://github.com/roypadina/VaultBar/releases/latest),
 unzip it and move `VaultBar.app` to `/Applications`.
 
-**Upgrades** (`brew upgrade --cask vaultbar`) are picked up automatically: within about 30 s the running VaultBar
-notices the new version, restarts into it once nothing is in progress, and re-registers its login item. Coming from
-0.1.2 or older, quit VaultBar and open it once after upgrading.
+**Upgrades** (`brew upgrade --cask vaultbar`) are picked up automatically: within about 30 s, once nothing is in
+progress, the running VaultBar starts the new version and quits as soon as it has taken over, so from 0.2.1 on
+auto-lock never stops. The upgrade from 0.2.0 or older still runs the old version's restart, which can leave
+VaultBar stopped for 1–2 s (coming from 0.1.2 or older, quit VaultBar and open it once after upgrading).
 
 ## Usage
 
@@ -251,7 +257,8 @@ open /Applications/VaultBar.app
 
 `RELEASE=1 Scripts/package_app.sh` also writes `dist/VaultBar.zip`. `Scripts/make_icons.sh` regenerates the icons
 from `Assets/icons/*.svg` (needs `brew install librsvg`). An end-to-end test with a throwaway vault in `.scratch/`:
-`VAULTBAR_E2E=1 swift test --filter endToEnd`. See [CONTRIBUTING.md](CONTRIBUTING.md).
+`VAULTBAR_E2E=1 swift test --filter endToEnd`. `Scripts/e2e_launchd.sh` tests "always one copy running" against
+launchd (hand-off, an upgrade, a crash) with a separate headless test build. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Uninstall
 
@@ -259,8 +266,10 @@ from `Assets/icons/*.svg` (needs `brew install librsvg`). An end-to-end test wit
 brew uninstall --zap --cask vaultbar
 ```
 
-Or turn off **Launch at login** in Settings, quit it, drag `/Applications/VaultBar.app` to the Trash, and delete
-`~/.config/vaultbar`. Your vault images stay where they are.
+Or run `vaultbar --unregister-login-item` (or turn off **Launch at login** in Settings), quit it, drag
+`/Applications/VaultBar.app` to the Trash, and delete `~/.config/vaultbar`. Your vault images stay where they are.
+`--unregister-login-item` locks every unlocked vault first; if one is busy it stops and changes nothing, unless you add
+`--force` (force-locks it; unsaved changes in open apps may be lost).
 
 ## Support
 

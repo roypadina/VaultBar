@@ -4,7 +4,7 @@ import VaultBarCore
 extension AppController {
     /// (Re)registers the panic-lock hotkey from the config ("off" unregisters it).
     func applyPanicHotkey() {
-        let hotkey = PanicHotkey.preset(config.panicHotkey)
+        let hotkey = Instance.isHeadless ? nil : PanicHotkey.preset(config.panicHotkey)
         if !PanicHotkeyMonitor.shared.register(hotkey, action: { [weak self] in self?.panicLock() }), let hotkey {
             log.error("panic hotkey \(hotkey.title, privacy: .public) is taken by another app")
             record("Panic hotkey \(hotkey.title) is taken by another app")
