@@ -30,6 +30,11 @@ struct VaultBarCoreTests {
         #expect(throws: (any Error).self) { try Config.load(from: url) }
     }
 
+    @Test("mountedIfKnown reads hdiutil info (nil only when it can't)")
+    func mountedIfKnown() {
+        #expect(HDIUtil.mountedIfKnown() != nil)
+    }
+
     @Test("first-run seed is empty; a config without raycastScriptsDir still loads")
     func seedAndOlderConfig() throws {
         #expect(Config.seed.vaults.isEmpty && Config.seed.defaultVault == nil && Config.seed.raycastScriptsDir == nil)

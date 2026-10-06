@@ -268,8 +268,9 @@ brew uninstall --zap --cask vaultbar
 
 Or run `vaultbar --unregister-login-item` (or turn off **Launch at login** in Settings), quit it, drag
 `/Applications/VaultBar.app` to the Trash, and delete `~/.config/vaultbar`. Your vault images stay where they are.
-`--unregister-login-item` locks every unlocked vault first; if one is busy it stops and changes nothing, unless you add
-`--force` (force-locks it; unsaved changes in open apps may be lost).
+`--unregister-login-item` locks every unlocked vault first. It locks what it can; if one can't be locked (e.g. it's
+busy), the login item stays and it exits 1. `--force` force-locks busy ones (unsaved changes in open apps may be lost).
+If the config exists but can't be read, or the list of mounted images can't be read, it changes nothing and exits 1.
 
 ## Support
 

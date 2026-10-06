@@ -140,6 +140,16 @@ public enum HDIUtil {
         return result.ok ? parseInfo(Data(result.stdout.utf8)) : [:]
     }
 
+    /// Like `mounted()`, but nil when `hdiutil info` fails or prints no property list, for callers that must not
+    /// mistake "unknown" for "nothing mounted".
+    public static func mountedIfKnown() -> [String: Mount]? {
+        let result = Tool.run(hdiutil, ["info", "-plist"])
+        let data = Data(result.stdout.utf8)
+        guard result.ok,
+              (try? PropertyListSerialization.propertyList(from: data, format: nil)) is [String: Any] else { return nil }
+        return parseInfo(data)
+    }
+
     public static func parseInfo(_ data: Data) -> [String: Mount] {
         guard let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
               let images = plist["images"] as? [[String: Any]] else { return [:] }

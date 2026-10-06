@@ -30,8 +30,19 @@ if arguments.count == 2, arguments[0] == "--render-settings" {
 // launchd is running without the Quit prompt, so every mounted vault is locked first; a busy one is only
 // force-locked with --force, otherwise nothing is removed (exit 1). For uninstalling.
 if arguments.first == "--unregister-login-item", arguments.count <= 2, arguments.count == 1 || arguments[1] == "--force" {
-    let config = (try? Config.load()) ?? Config.seed
-    let report = UnregisterLock.lockAll(config.vaults, mounted: HDIUtil.mounted(), force: arguments.count == 2,
+    // A missing config means no vaults; an unreadable one must not be treated as "nothing to lock".
+    let config: Config
+    do {
+        config = try Config.load() ?? Config.seed
+    } catch {
+        CommandLineTool.printError("can't read \(Config.url.path): \(error.localizedDescription); nothing changed")
+        exit(1)
+    }
+    guard let mounted = HDIUtil.mountedIfKnown() else {
+        CommandLineTool.printError("can't list mounted disk images (hdiutil info failed); nothing changed")
+        exit(1)
+    }
+    let report = UnregisterLock.lockAll(config.vaults, mounted: mounted, force: arguments.count == 2,
                                         detach: HDIUtil.detach)
     for name in report.locked { print("locked \(name)") }
     guard report.mayUnregister else {
