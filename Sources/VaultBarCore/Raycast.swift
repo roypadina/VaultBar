@@ -1,6 +1,6 @@
 import Foundation
 
-/// Two Raycast Script Commands per vault. They only `open vaultbar://...`; the app asks for the
+/// Three Raycast Script Commands per vault (unlock, lock, open). They only `open vaultbar://...`; the app asks for the
 /// password, so it never passes through Raycast.
 public enum Raycast {
     /// Marks files VaultBar wrote; only those are ever deleted.
@@ -18,7 +18,7 @@ public enum Raycast {
     public static func scripts(for vaults: [Vault]) -> [String: String] {
         var result: [String: String] = [:]
         for vault in vaults {
-            for (action, verb, icon) in [(VaultAction.unlock, "Unlock", "🔓"), (.lock, "Lock", "🔒")] {
+            for (action, verb, icon) in [(VaultAction.unlock, "Unlock", "🔓"), (.lock, "Lock", "🔒"), (.open, "Open", "📂")] {
                 result["vaultbar-\(action.rawValue)-\(slug(vault.name)).sh"] = """
                     #!/bin/bash
 
@@ -27,7 +27,7 @@ public enum Raycast {
                     # @raycast.mode silent
                     \(marker)
                     # @raycast.icon \(icon)
-                    # @raycast.description \(verb) the \(vault.name) vault with VaultBar\(action == .unlock ? " (it asks for the password)" : "")
+                    # @raycast.description \(verb) the \(vault.name) vault with VaultBar\(descriptionSuffix[action] ?? "")
 
                     open "\(VaultURL.make(action, name: vault.name))"
 
@@ -37,6 +37,11 @@ public enum Raycast {
         return result
     }
 
+    static let descriptionSuffix: [VaultAction: String] = [
+        .unlock: " (it asks for the password)",
+        .open: " in Finder (unlocks it first if needed)",
+    ]
+
     /// Writes the scripts for `vaults` and removes VaultBar-written scripts of vaults no longer configured.
     /// Never touches any other file in `directory`.
     public static func sync(_ vaults: [Vault], in directory: URL) throws {
@@ -45,6 +50,7 @@ public enum Raycast {
         let wanted = scripts(for: vaults)
         for (name, body) in wanted {
             let url = directory.appendingPathComponent(name)
+            if (try? String(contentsOf: url, encoding: .utf8)) == body { continue } // runs on every launch
             try body.write(to: url, atomically: true, encoding: .utf8)
             try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         }

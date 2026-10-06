@@ -1,7 +1,30 @@
 import Foundation
 
 public enum VaultAction: String, Sendable {
-    case unlock, lock, toggle
+    case unlock, lock, toggle, open
+}
+
+/// What an action does to a vault in its current state.
+public enum VaultStep: Equatable, Sendable {
+    case nothing
+    case lock
+    case openInFinder
+    /// Show the password popup; `thenOpen`: open the vault in Finder after a successful unlock.
+    case promptUnlock(thenOpen: Bool)
+}
+
+public extension VaultAction {
+    /// `openAfterUnlock` (the setting) applies to unlock and toggle; `open` always opens.
+    /// Unlock on an unlocked vault and lock on a locked one do nothing.
+    func step(unlocked: Bool, openAfterUnlock: Bool) -> VaultStep {
+        switch (self, unlocked) {
+        case (.unlock, true), (.lock, false): .nothing
+        case (.lock, true), (.toggle, true): .lock
+        case (.open, true): .openInFinder
+        case (.open, false): .promptUnlock(thenOpen: true)
+        case (.unlock, false), (.toggle, false): .promptUnlock(thenOpen: openAfterUnlock)
+        }
+    }
 }
 
 public enum VaultURL {

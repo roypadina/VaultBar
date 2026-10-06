@@ -29,8 +29,9 @@ struct SettingsView: View {
             }
             Section {
                 Toggle("Launch at login (auto-lock needs VaultBar running)", isOn: controller.binding(\.launchAtLogin))
+                Toggle("Open in Finder after unlocking", isOn: controller.binding(\.openAfterUnlock))
             }
-            Section("Raycast Script Commands (Unlock / Lock per vault)") {
+            Section("Raycast Script Commands (Unlock / Lock / Open per vault)") {
                 LabeledContent("Folder") {
                     HStack {
                         Text(controller.config.raycastScriptsDir ?? "Off").foregroundStyle(.secondary)

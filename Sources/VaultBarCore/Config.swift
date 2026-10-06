@@ -28,6 +28,8 @@ public struct Config: Codable, Equatable, Sendable {
     public var vaults: [Vault]
     /// Where Raycast Script Commands go (may start with `~`). nil: no scripts are written.
     public var raycastScriptsDir: String?
+    /// Open the vault in Finder after every unlock (the `open` action always does).
+    public var openAfterUnlock = false
 
     public static let url = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".config/vaultbar/vaults.json")
@@ -89,5 +91,18 @@ public struct Config: Codable, Equatable, Sendable {
     public func vault(named name: String?) -> Vault? {
         let target = (name ?? "").isEmpty ? defaultVault : name
         return vaults.first { $0.name == target }
+    }
+}
+
+extension Config {
+    /// Keys added after 0.1.0 are optional in the file, so older configs keep loading.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        defaultVault = try container.decodeIfPresent(String.self, forKey: .defaultVault)
+        autoLock = try container.decode(AutoLock.self, forKey: .autoLock)
+        launchAtLogin = try container.decode(Bool.self, forKey: .launchAtLogin)
+        vaults = try container.decode([Vault].self, forKey: .vaults)
+        raycastScriptsDir = try container.decodeIfPresent(String.self, forKey: .raycastScriptsDir)
+        openAfterUnlock = try container.decodeIfPresent(Bool.self, forKey: .openAfterUnlock) ?? false
     }
 }

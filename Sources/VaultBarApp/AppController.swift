@@ -22,6 +22,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private var pendingForce = Set<String>()
     private var pause = AutoLockPause()
     private var screenLocked = false
+    /// attach / detach / create calls still running (see `background`)
+    private var inFlight = 0
     private var windows: [String: NSWindow] = [:]
     private lazy var passwordPanel = PasswordPanel()
 
@@ -101,6 +103,38 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             MainActor.assumeIsolated { self.tick() }
         }
         refresh()
+        syncScripts() // idempotent; brings scripts added in an update without pressing Regenerate
+        Task { try? await Task.sleep(for: .seconds(2)); handOffIfIdle() }
+    }
+
+    /// Started by Finder, `open` or a link while the login agent is enabled: once idle, let launchd run the
+    /// supervised copy instead (it restarts after a crash). Waiting until nothing is in progress means a
+    /// `vaultbar://` action that launched this copy finishes here first, so it is never lost.
+    private func handOffIfIdle() {
+        let uiOpen = NSApp.modalWindow != nil || statusItem?.menu != nil || windows.values.contains(where: \.isVisible)
+        guard canHandOff(isAgent: isAgentInstance, handOffDisabled: CommandLine.arguments.contains("--no-handoff"),
+                         launchAtLogin: config.launchAtLogin, agentEnabled: agent.status == .enabled,
+                         prompting: prompting, inFlight: inFlight, pendingForce: pendingForce.count,
+                         paused: pause.isActive(), uiOpen: uiOpen) else { return }
+        // The helper starts the agent after this copy has exited (else the agent would see a rival and quit).
+        // If the agent can't start, it reopens this app without a hand-off, so VaultBar never ends up not running.
+        let script = "sleep 1; /bin/launchctl kickstart gui/\(getuid())/\(Self.agentLabel)"
+            + " || /usr/bin/open -n -b com.padina.vaultbar --args --no-handoff"
+        // New session: launchd's clean-up of this app's process group must not take the helper down with it.
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID))
+        var pid: pid_t = 0
+        let argv: [UnsafeMutablePointer<CChar>?] = ["/bin/sh", "-c", script].map { strdup($0) } + [nil]
+        let spawned = posix_spawn(&pid, "/bin/sh", nil, &attributes, argv, environ)
+        argv.forEach { free($0) }
+        posix_spawnattr_destroy(&attributes)
+        guard spawned == 0 else {
+            log.error("hand-off to the login agent failed: \(spawned)")
+            return
+        }
+        log.notice("handing off to the login agent")
+        exit(0)
     }
 
     /// Quitting with a vault unlocked leaves it unguarded, so ask. Logout/restart/shutdown carry a quit reason
@@ -198,7 +232,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
             showMenu()
         } else if let vault = config.vault(named: nil) {
-            toggle(vault)
+            perform(.toggle, on: vault, reason: "user")
         } else {
             showMenu()
         }
@@ -215,10 +249,13 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             header.image = NSImage(systemSymbolName: unlocked ? "lock.open.fill" : "lock.fill", accessibilityDescription: nil)
             header.isEnabled = false
             menu.addItem(header)
-            let action = menuItem(unlocked ? "Lock" : "Unlock…", #selector(menuToggle(_:)))
-            action.representedObject = vault.name
-            action.indentationLevel = 1
-            menu.addItem(action)
+            for (action, title) in [(unlocked ? VaultAction.lock : .unlock, unlocked ? "Lock" : "Unlock…"),
+                                    (.open, unlocked ? "Open in Finder" : "Unlock & Open…")] {
+                let item = menuItem(title, #selector(menuPerform(_:)))
+                item.representedObject = [action.rawValue, vault.name]
+                item.indentationLevel = 1
+                menu.addItem(item)
+            }
         }
         if config.vaults.isEmpty {
             let empty = NSMenuItem(title: "No vaults yet", action: nil, keyEquivalent: "")
@@ -249,8 +286,10 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         return item
     }
 
-    @objc private func menuToggle(_ sender: NSMenuItem) {
-        if let vault = config.vault(named: sender.representedObject as? String) { toggle(vault) }
+    @objc private func menuPerform(_ sender: NSMenuItem) {
+        guard let parts = sender.representedObject as? [String], parts.count == 2,
+              let action = VaultAction(rawValue: parts[0]), let vault = config.vault(named: parts[1]) else { return }
+        perform(action, on: vault, reason: "user")
     }
 
     @objc private func lockAll() {
@@ -269,26 +308,26 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             alert(name.isEmpty ? "No default vault is set" : "No vault named \"\(name)\"", "Check VaultBar Settings.")
             return
         }
+        perform(action, on: vault, reason: "link")
+    }
+
+    // MARK: Unlock / lock / open
+
+    private func perform(_ action: VaultAction, on vault: Vault, reason: String) {
         refresh()
-        switch action {
-        case .unlock: if mountPoint(vault) == nil { unlock(vault) }
-        case .lock: lock(vault, reason: "link", onBusy: .ask)
-        case .toggle: toggle(vault)
+        switch action.step(unlocked: mountPoint(vault) != nil, openAfterUnlock: config.openAfterUnlock) {
+        case .nothing: break
+        case .lock: lock(vault, reason: reason, onBusy: .ask)
+        case .openInFinder: openInFinder(vault)
+        case .promptUnlock(let thenOpen): unlock(vault, thenOpen: thenOpen)
         }
     }
 
-    // MARK: Unlock / lock
-
-    private func toggle(_ vault: Vault) {
-        refresh()
-        if mountPoint(vault) != nil {
-            lock(vault, reason: "user", onBusy: .ask)
-        } else {
-            unlock(vault)
-        }
+    private func openInFinder(_ vault: Vault) {
+        if let mountPoint = mountPoint(vault) { NSWorkspace.shared.open(URL(fileURLWithPath: mountPoint)) }
     }
 
-    private func unlock(_ vault: Vault, error: String? = nil) {
+    private func unlock(_ vault: Vault, thenOpen: Bool, error: String? = nil) {
         guard !prompting else {
             if passwordPanel.isVisible { passwordPanel.makeKeyAndOrderFront(nil) } // asked twice: bring it back
             return
@@ -298,13 +337,13 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         RunLoop.main.perform(inModes: [.default]) {
             MainActor.assumeIsolated {
                 self.passwordPanel.ask(vault: vault.name, message: error ?? "Enter the vault password.") { secret in
-                    self.attach(vault, secret)
+                    self.attach(vault, secret, thenOpen: thenOpen)
                 }
             }
         }
     }
 
-    private func attach(_ vault: Vault, _ secret: Secret?) {
+    private func attach(_ vault: Vault, _ secret: Secret?, thenOpen: Bool) {
         guard let secret, !secret.isEmpty else {
             secret?.wipe()
             prompting = false
@@ -318,8 +357,9 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             refresh()
             if result.ok {
                 log.notice("unlocked \(vault.name, privacy: .public)")
+                if thenOpen { openInFinder(vault) }
             } else if result.isAuthError {
-                unlock(vault, error: "Wrong password. Try again.")
+                unlock(vault, thenOpen: thenOpen, error: "Wrong password. Try again.")
             } else {
                 self.alert("Couldn't unlock \(vault.name)", result.output)
             }
@@ -399,6 +439,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             refresh()
         }
         checkIdle()
+        handOffIfIdle()
     }
 
     private func checkIdle() {
@@ -654,7 +695,11 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 }
 
-/// Runs blocking hdiutil/diskutil work off the main thread.
-private func background<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
-    await Task.detached(operation: work).value
+extension AppController {
+    /// Runs blocking hdiutil/diskutil work off the main thread, counted in `inFlight` so a hand-off waits for it.
+    fileprivate func background<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        inFlight += 1
+        defer { inFlight -= 1 }
+        return await Task.detached(operation: work).value
+    }
 }

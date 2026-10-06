@@ -28,8 +28,9 @@ The password is never stored anywhere.
 
 ## Features
 
-- **One click** — left-click the menu bar icon to lock or unlock your default vault. Right-click for every vault,
-  Lock All, New Vault…, Add Existing Vault…, Settings….
+- **One click** — left-click the menu bar icon to lock or unlock your default vault. Right-click for every vault
+  (Unlock… / Lock, **Open in Finder** or **Unlock & Open…**), Lock All, New Vault…, Add Existing Vault…, Settings….
+- **Open in Finder after unlocking** (optional setting), or per vault with Open / `vaultbar://open`.
 - **Password popup** that never saves anything: no Keychain, no "remember password", no clipboard.
 - **Auto-lock**, for every vault:
   - on **sleep**: forced, immediately;
@@ -42,7 +43,8 @@ The password is never stored anywhere.
 - **Add Existing Vault…** for any encrypted `.sparsebundle` or `.dmg` (unencrypted images are rejected).
 - **URL scheme** and optional **Raycast Script Commands**.
 - **Always running**: the login item is a LaunchAgent inside the app, so macOS starts VaultBar at login and
-  restarts it if it ever crashes (not after you choose Quit). Only one copy runs at a time. No Dock icon.
+  restarts it if it ever crashes (not after you choose Quit). Only one copy runs at a time; if you start VaultBar
+  yourself (Finder, a link), it hands over to that supervised copy as soon as it's idle. No Dock icon.
 - **Quit asks first** while a vault is unlocked, since auto-lock stops while VaultBar is closed:
   **Lock All & Quit**, **Quit** or **Cancel**.
 
@@ -90,6 +92,7 @@ If a vault is busy when you lock it, VaultBar asks before forcing it. Forcing ca
   "autoLock": { "onSleep": true, "onScreenLock": true, "idleMinutes": 15 },
   "launchAtLogin": true,
   "raycastScriptsDir": "~/Raycast",
+  "openAfterUnlock": false,
   "vaults": [
     { "name": "Personal", "imagePath": "~/Vaults/Personal.sparsebundle" },
     { "name": "Work", "imagePath": "~/Vaults/Work.sparsebundle" }
@@ -98,6 +101,8 @@ If a vault is busy when you lock it, VaultBar asks before forcing it. Forcing ca
 ```
 
 - `idleMinutes: 0` turns idle locking off. `raycastScriptsDir` is optional (no scripts without it).
+- `openAfterUnlock: true` opens the vault in Finder after every unlock: the menu bar click, the menu's Unlock…,
+  `vaultbar://unlock` and the Raycast Unlock script. Default `false`.
 - Vaults are matched by their image file, so a volume that macOS renamed to `Personal 1` still shows the right state.
 - Removing a vault in Settings only removes it from the list. VaultBar never deletes an image file.
 
@@ -107,16 +112,26 @@ If a vault is busy when you lock it, VaultBar asks before forcing it. Forcing ca
 vaultbar://unlock/<name>
 vaultbar://lock/<name>
 vaultbar://toggle/<name>
+vaultbar://open/<name>
 ```
 
-The name is URL-encoded (`My%20Vault`); an empty name means the default vault. Unlock always shows the password popup.
+The name is URL-encoded (`My%20Vault`); an empty name means the default vault.
+
+- **unlock** shows the password popup; it does nothing if the vault is already unlocked. With `openAfterUnlock`,
+  Finder opens the vault afterwards.
+- **lock** locks (asks before forcing a busy vault). **toggle** locks or unlocks.
+- **open** opens the vault in Finder; if it is locked, it asks for the password first, then opens it.
+  Cancel does nothing.
 
 ## Raycast
 
-Pick your Raycast script directory in **Settings → Raycast Script Commands**. VaultBar then keeps two scripts per vault
-there, `vaultbar-unlock-<name>.sh` and `vaultbar-lock-<name>.sh`, and updates them when you add, rename or remove a
-vault. Each script only runs `open "vaultbar://unlock/<name>"`; the password goes into VaultBar's popup, never through
-Raycast. VaultBar only ever deletes scripts it wrote itself (marked `# @raycast.packageName VaultBar`).
+Pick your Raycast script directory in **Settings → Raycast Script Commands**. VaultBar then keeps three scripts per
+vault there, **Unlock**, **Lock** and **Open** (`vaultbar-unlock-<slug>.sh`, `vaultbar-lock-<slug>.sh`,
+`vaultbar-open-<slug>.sh`). The slug is the vault name in lowercase, with spaces and symbols turned into dashes
+(e.g. `My Vault` → `my-vault`). VaultBar updates the scripts on every launch and when you add, rename or remove a
+vault. Each script only runs `open "vaultbar://unlock|lock|open/<name>"`; the password goes into VaultBar's popup,
+never through Raycast. VaultBar only ever deletes scripts it wrote itself (marked
+`# @raycast.packageName VaultBar`).
 
 ## Security model
 

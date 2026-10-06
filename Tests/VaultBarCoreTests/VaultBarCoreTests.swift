@@ -41,7 +41,7 @@ struct VaultBarCoreTests {
              "vaults": [{"name": "MyVault", "imagePath": "~/Vaults/MyVault.sparsebundle"}]}
             """.utf8).write(to: url)
         let config = try #require(try Config.load(from: url))
-        #expect(config.raycastScriptsDir == nil && config.raycastDirectory == nil)
+        #expect(config.raycastScriptsDir == nil && config.raycastDirectory == nil && !config.openAfterUnlock)
         #expect(config.vault(named: "")?.imagePath == "~/Vaults/MyVault.sparsebundle")
         #expect(sample.raycastDirectory?.path == NSString(string: "~/Scripts/Raycast").expandingTildeInPath)
     }
@@ -96,6 +96,8 @@ struct VaultBarCoreTests {
         #expect(parse("vaultbar://Lock/My%20Vault%2F2/")! == (.lock, "My Vault/2"))
         #expect(parse("vaultbar://toggle")! == (.toggle, ""))
         #expect(parse("vaultbar://toggle/")! == (.toggle, ""))
+        #expect(parse("vaultbar://open/My%20Vault")! == (.open, "My Vault"))
+        #expect(parse("vaultbar://open/")! == (.open, ""))
         #expect(parse("vaultbar://format/MyVault") == nil)
         #expect(parse("https://unlock/MyVault") == nil)
         let made = VaultURL.make(.unlock, name: "My Vault \"$(x)\" כספת")
@@ -110,12 +112,15 @@ struct VaultBarCoreTests {
         #expect(Raycast.slug("כספת") == "כספת")
         #expect(Raycast.slug("!!!") == "vault")
         let scripts = Raycast.scripts(for: [Vault(name: "My Vault", imagePath: "~/x")])
-        #expect(Set(scripts.keys) == ["vaultbar-unlock-my-vault.sh", "vaultbar-lock-my-vault.sh"])
+        #expect(Set(scripts.keys) == ["vaultbar-unlock-my-vault.sh", "vaultbar-lock-my-vault.sh", "vaultbar-open-my-vault.sh"])
         let unlock = scripts["vaultbar-unlock-my-vault.sh"]!
         #expect(unlock.hasPrefix("#!/bin/bash\n\n# @raycast.schemaVersion 1\n# @raycast.title Unlock My Vault\n"))
         #expect(unlock.contains("# @raycast.icon 🔓"))
         #expect(unlock.hasSuffix("open \"vaultbar://unlock/My%20Vault\"\n"))
         #expect(scripts["vaultbar-lock-my-vault.sh"]!.contains("open \"vaultbar://lock/My%20Vault\""))
+        let open = scripts["vaultbar-open-my-vault.sh"]!
+        #expect(open.contains("# @raycast.title Open My Vault\n") && open.contains("# @raycast.icon 📂"))
+        #expect(open.hasSuffix("open \"vaultbar://open/My%20Vault\"\n"))
     }
 
     @Test("script sync writes executables and prunes only its own files")
@@ -128,7 +133,41 @@ struct VaultBarCoreTests {
         #expect(mode == 0o755)
         try Raycast.sync([Vault(name: "B", imagePath: "/b")], in: dir)
         let names = Set(try FileManager.default.contentsOfDirectory(atPath: dir.path))
-        #expect(names == Set(foreign + ["vaultbar-unlock-b.sh", "vaultbar-lock-b.sh"]))
+        #expect(names == Set(foreign + ["vaultbar-unlock-b.sh", "vaultbar-lock-b.sh", "vaultbar-open-b.sh"]))
+    }
+
+    @Test("hand-off only when nothing is in progress")
+    func handOff() {
+        func can(isAgent: Bool = false, disabled: Bool = false, atLogin: Bool = true, enabled: Bool = true,
+                 prompting: Bool = false, inFlight: Int = 0, pendingForce: Int = 0, paused: Bool = false,
+                 uiOpen: Bool = false) -> Bool {
+            canHandOff(isAgent: isAgent, handOffDisabled: disabled, launchAtLogin: atLogin, agentEnabled: enabled,
+                       prompting: prompting, inFlight: inFlight, pendingForce: pendingForce, paused: paused, uiOpen: uiOpen)
+        }
+        #expect(can())
+        #expect(!can(isAgent: true))
+        #expect(!can(disabled: true))
+        #expect(!can(atLogin: false))
+        #expect(!can(enabled: false))
+        #expect(!can(prompting: true))
+        #expect(!can(inFlight: 1)) // a lock's detach still running
+        #expect(!can(pendingForce: 1))
+        #expect(!can(paused: true))
+        #expect(!can(uiOpen: true))
+    }
+
+    @Test("what each action does: lock, open in Finder, or prompt (and open after) per openAfterUnlock")
+    func steps() {
+        for setting in [false, true] {
+            #expect(VaultAction.unlock.step(unlocked: false, openAfterUnlock: setting) == .promptUnlock(thenOpen: setting))
+            #expect(VaultAction.toggle.step(unlocked: false, openAfterUnlock: setting) == .promptUnlock(thenOpen: setting))
+            #expect(VaultAction.open.step(unlocked: false, openAfterUnlock: setting) == .promptUnlock(thenOpen: true))
+            #expect(VaultAction.open.step(unlocked: true, openAfterUnlock: setting) == .openInFinder)
+            #expect(VaultAction.unlock.step(unlocked: true, openAfterUnlock: setting) == .nothing)
+            #expect(VaultAction.lock.step(unlocked: true, openAfterUnlock: setting) == .lock)
+            #expect(VaultAction.toggle.step(unlocked: true, openAfterUnlock: setting) == .lock)
+            #expect(VaultAction.lock.step(unlocked: false, openAfterUnlock: setting) == .nothing)
+        }
     }
 
     @Test("sync-folder warning")
