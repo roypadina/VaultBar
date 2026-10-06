@@ -11,6 +11,13 @@ public final class Secret: @unchecked Sendable {
     deinit { wipe() }
 
     public var isEmpty: Bool { bytes.isEmpty }
+    var containsLineBreakOrNUL: Bool { bytes.contains { $0 == 0x0A || $0 == 0x0D || $0 == 0 } }
+
+    /// `first`, a newline, `second`: two passwords on one stdin (diskutil chpass).
+    convenience init(joining first: Secret, _ second: Secret) {
+        self.init("")
+        bytes = first.bytes + [0x0A] + second.bytes
+    }
 
     public func wipe() {
         bytes.withUnsafeMutableBytes { buffer in
@@ -84,9 +91,27 @@ public enum HDIUtil {
     // one (imageinfo, verify, convert, ...) without -stdinpass pops the system password dialog with its
     // "Remember password in my keychain" box, so don't add one.
 
-    /// Normal Finder-visible mount.
-    public static func attach(_ imagePath: String, secret: Secret) -> ToolResult {
-        Tool.run(hdiutil, ["attach", "-stdinpass", imagePath], secret: secret)
+    /// The password always comes from stdin (`-stdinpass`). Default: a normal Finder-visible mount in /Volumes.
+    public static func attachArguments(_ imagePath: String, mountPoint: String? = nil, hidden: Bool = false,
+                                       readOnly: Bool = false) -> [String] {
+        ["attach", "-stdinpass"] + (readOnly ? ["-readonly"] : []) + (hidden ? ["-nobrowse"] : [])
+            + (mountPoint.map { ["-mountpoint", $0] } ?? []) + [imagePath]
+    }
+
+    public static func attach(_ imagePath: String, mountPoint: String? = nil, hidden: Bool = false,
+                              readOnly: Bool = false, secret: Secret) -> ToolResult {
+        Tool.run(hdiutil, attachArguments(imagePath, mountPoint: mountPoint, hidden: hidden, readOnly: readOnly),
+                 secret: secret)
+    }
+
+    /// Re-wraps the image key with a new password (stdin: old, newline, new). Not a re-encryption: old copies
+    /// of the image (backups, snapshots) still open with the old password. The vault must be locked.
+    public static func changePassword(_ imagePath: String, old: Secret, new: Secret) -> ToolResult {
+        guard !old.containsLineBreakOrNUL, !new.containsLineBreakOrNUL else {
+            return ToolResult(status: -1, stdout: "", output: "A password with a line break can't be changed here.")
+        }
+        return Tool.run("/usr/sbin/diskutil", ["image", "--stdinpassphrase", "chpass", imagePath],
+                        secret: Secret(joining: old, new))
     }
 
     public static func detach(_ mountPoint: String, force: Bool) -> ToolResult {
@@ -109,22 +134,22 @@ public enum HDIUtil {
         return plist["encrypted"] as? Bool ?? false
     }
 
-    /// Resolved image path -> mount point, for every attached image that is mounted.
-    public static func mounted() -> [String: String] {
+    /// Resolved image path -> its mount, for every attached image that is mounted.
+    public static func mounted() -> [String: Mount] {
         let result = Tool.run(hdiutil, ["info", "-plist"])
         return result.ok ? parseInfo(Data(result.stdout.utf8)) : [:]
     }
 
-    public static func parseInfo(_ data: Data) -> [String: String] {
+    public static func parseInfo(_ data: Data) -> [String: Mount] {
         guard let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
               let images = plist["images"] as? [[String: Any]] else { return [:] }
-        var result: [String: String] = [:]
+        var result: [String: Mount] = [:]
         for image in images {
             guard let path = image["image-path"] as? String,
                   let entities = image["system-entities"] as? [[String: Any]],
                   let mountPoint = entities.lazy.compactMap({ $0["mount-point"] as? String }).first
             else { continue }
-            result[resolve(path)] = mountPoint
+            result[resolve(path)] = Mount(path: mountPoint, readOnly: image["writeable"] as? Bool == false)
         }
         return result
     }
@@ -138,6 +163,45 @@ public enum HDIUtil {
     }
 }
 
-public extension [String: String] {
-    func mountPoint(of vault: Vault) -> String? { self[HDIUtil.resolve(vault.imagePath)] }
+public struct Mount: Equatable, Sendable {
+    public var path: String
+    public var readOnly: Bool
+}
+
+public extension [String: Mount] {
+    func mount(of vault: Vault) -> Mount? { self[HDIUtil.resolve(vault.imagePath)] }
+    func mountPoint(of vault: Vault) -> String? { mount(of: vault)?.path }
+}
+
+/// A private mount folder exists only while its vault is unlocked: created (0700) right before attach and removed
+/// after detach, so a locked vault leaves no plain folder anything could write into.
+public enum MountFolder {
+    /// Error message, or nil once `path` is an empty folder ready to mount on.
+    public static func prepare(_ path: String) -> String? {
+        if let problem = Config.problem(withMountPoint: path) { return problem }
+        let fm = FileManager.default
+        var isFolder: ObjCBool = false
+        if fm.fileExists(atPath: path, isDirectory: &isFolder) {
+            guard isFolder.boolValue else { return "\(path) is a file, not a folder." }
+            let contents = (try? fm.contentsOfDirectory(atPath: path)) ?? ["?"]
+            guard contents.isEmpty else { return "\(path) isn't empty. VaultBar only mounts on an empty folder." }
+            return chmod(path, 0o700) == 0 ? nil : "Couldn't make \(path) private (chmod 700)."
+        }
+        do {
+            try fm.createDirectory(atPath: path, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        } catch {
+            return error.localizedDescription
+        }
+        return nil
+    }
+
+    /// `rmdir`: only ever removes an empty folder.
+    public static func remove(_ path: String) { rmdir(path) }
+
+    /// Private mount folders that shouldn't exist: every configured one whose vault isn't mounted, e.g. after an
+    /// eject outside VaultBar (Finder, `hdiutil detach`, another app). `attaching`: vault names whose folder was
+    /// just created for an unlock in progress.
+    public static func stale(vaults: [Vault], mounted: [String: Mount], attaching: Set<String> = []) -> [String] {
+        vaults.filter { mounted.mount(of: $0) == nil && !attaching.contains($0.name) }.compactMap(\.expandedMountPoint)
+    }
 }

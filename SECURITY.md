@@ -19,5 +19,8 @@ VaultBar runs entirely on-device and makes no network connections. The encryptio
 - how the password travels: the popup and New Vault form, `Secret`, and the stdin pipe to `hdiutil` / `diskutil`
   (it must never be stored, logged, put in argv/env/clipboard, or trigger the system password dialog);
 - auto-lock (sleep, screen lock, idle, pause) failing to lock when it should;
-- the `vaultbar://` URL scheme and the generated Raycast scripts;
+- the `vaultbar://` URL scheme, the `vaultbar` command line (neither may ever accept a password) and the generated
+  Raycast scripts;
+- private mount folders (created only right before unlock, removed after lock) and read-only / hidden mounts;
+- Change Password (`diskutil image chpass`, both passwords on stdin only);
 - the config file `~/.config/vaultbar/vaults.json` (no secrets, mode 600).

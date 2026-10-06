@@ -76,7 +76,7 @@ struct VaultBarCoreTests {
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: image)
         let plist: [String: Any] = ["images": [
             ["image-path": "/System/x.dmg", "system-entities": [["dev-entry": "/dev/disk6"]]],
-            ["image-path": image.path, "system-entities": [
+            ["image-path": image.path, "writeable": false, "system-entities": [
                 ["dev-entry": "/dev/disk8"],
                 ["dev-entry": "/dev/disk9s1", "mount-point": "/Volumes/MyVault 1"],
             ]],
@@ -85,6 +85,7 @@ struct VaultBarCoreTests {
         let mounted = HDIUtil.parseInfo(data)
         #expect(mounted.count == 1)
         #expect(mounted.mountPoint(of: Vault(name: "V", imagePath: link.path)) == "/Volumes/MyVault 1")
+        #expect(mounted.mount(of: Vault(name: "V", imagePath: link.path))?.readOnly == true)
         #expect(mounted.mountPoint(of: Vault(name: "W", imagePath: "/nope.dmg")) == nil)
         #expect(HDIUtil.parseInfo(Data("junk".utf8)).isEmpty)
     }
@@ -92,17 +93,24 @@ struct VaultBarCoreTests {
     @Test("URL routing")
     func urls() throws {
         let parse = { VaultURL.parse(URL(string: $0)!) }
-        #expect(parse("vaultbar://unlock/MyVault")! == (.unlock, "MyVault"))
-        #expect(parse("vaultbar://Lock/My%20Vault%2F2/")! == (.lock, "My Vault/2"))
-        #expect(parse("vaultbar://toggle")! == (.toggle, ""))
-        #expect(parse("vaultbar://toggle/")! == (.toggle, ""))
-        #expect(parse("vaultbar://open/My%20Vault")! == (.open, "My Vault"))
-        #expect(parse("vaultbar://open/")! == (.open, ""))
+        func request(_ action: VaultAction, _ name: String, readOnly: Bool? = nil) -> VaultRequest {
+            VaultRequest(action: action, name: name, readOnly: readOnly)
+        }
+        #expect(parse("vaultbar://unlock/MyVault") == request(.unlock, "MyVault"))
+        #expect(parse("vaultbar://Lock/My%20Vault%2F2/") == request(.lock, "My Vault/2"))
+        #expect(parse("vaultbar://toggle") == request(.toggle, ""))
+        #expect(parse("vaultbar://toggle/") == request(.toggle, ""))
+        #expect(parse("vaultbar://open/My%20Vault") == request(.open, "My Vault"))
+        #expect(parse("vaultbar://open/") == request(.open, ""))
+        #expect(parse("vaultbar://unlock/MyVault?readonly=1") == request(.unlock, "MyVault", readOnly: true))
+        #expect(parse("vaultbar://unlock/MyVault?readonly=0") == request(.unlock, "MyVault", readOnly: false))
+        #expect(parse("vaultbar://lockall") == request(.lockAll, ""))
         #expect(parse("vaultbar://format/MyVault") == nil)
         #expect(parse("https://unlock/MyVault") == nil)
         let made = VaultURL.make(.unlock, name: "My Vault \"$(x)\" כספת")
         #expect(!made.contains(" ") && !made.contains("\"") && !made.contains("$"))
-        #expect(VaultURL.parse(URL(string: made)!)! == (.unlock, "My Vault \"$(x)\" כספת"))
+        #expect(VaultURL.parse(URL(string: made)!) == request(.unlock, "My Vault \"$(x)\" כספת"))
+        #expect(VaultURL.make(.unlock, name: "A B", readOnly: true) == "vaultbar://unlock/A%20B?readonly=1")
     }
 
     @Test("slugs and script contents")
@@ -136,6 +144,128 @@ struct VaultBarCoreTests {
         #expect(names == Set(foreign + ["vaultbar-unlock-b.sh", "vaultbar-lock-b.sh", "vaultbar-open-b.sh"]))
     }
 
+    @Test("vault mount options: optional in the file, false stored as no key, validated")
+    func mountOptions() throws {
+        var vault = Vault(name: "MyVault", imagePath: "/Users/alice/Vaults/MyVault.sparsebundle")
+        #expect(!vault.isHidden && !vault.isReadOnly && vault.expandedMountPoint == nil)
+        vault.isReadOnly = true
+        vault.isHidden = true
+        vault.mountPoint = "~/Vaults/mnt/MyVault"
+        let encoded = String(decoding: try JSONEncoder().encode(vault), as: UTF8.self)
+        #expect(encoded.contains("\"readOnly\":true") && encoded.contains("\"hidden\":true"))
+        vault.isHidden = false
+        #expect(!String(decoding: try JSONEncoder().encode(vault), as: UTF8.self).contains("hidden"))
+        #expect(vault.expandedMountPoint == NSString(string: "~/Vaults/mnt/MyVault").expandingTildeInPath)
+        let old = try JSONDecoder().decode(Vault.self, from: Data(#"{"name": "A", "imagePath": "/a"}"#.utf8))
+        #expect(old == Vault(name: "A", imagePath: "/a"))
+
+        var config = sample
+        config.vaults[0].mountPoint = "relative/mnt"
+        #expect(config.validate() != nil)
+        config.vaults[0].mountPoint = "/tmp/vaultbar-test-mnt/A"
+        #expect(config.validate() == nil)
+        config.vaults.append(Vault(name: "Other", imagePath: "/b", mountPoint: "/tmp/vaultbar-test-mnt/A"))
+        #expect(config.validate() == "Two vaults use the same mount folder")
+        // A private mount folder in a synced folder would sync the plaintext.
+        let synced = try tempDir()
+        try FileManager.default.createDirectory(at: synced.appendingPathComponent(".stfolder"), withIntermediateDirectories: true)
+        #expect(Config.problem(withMountPoint: synced.appendingPathComponent("mnt/A").path)?.contains("synced") == true)
+    }
+
+    @Test("attach arguments: always -stdinpass, read-only / hidden / private mount on request")
+    func attachArguments() {
+        #expect(HDIUtil.attachArguments("/v.sparsebundle") == ["attach", "-stdinpass", "/v.sparsebundle"])
+        #expect(HDIUtil.attachArguments("/v.sparsebundle", mountPoint: "/m/A", hidden: true, readOnly: true)
+                == ["attach", "-stdinpass", "-readonly", "-nobrowse", "-mountpoint", "/m/A", "/v.sparsebundle"])
+        // Two passwords on one stdin for chpass; a line break in either would split them wrongly.
+        let joined = Secret(joining: Secret("old"), Secret("new"))
+        #expect(!joined.isEmpty && !Secret("a b").containsLineBreakOrNUL && Secret("a\nb").containsLineBreakOrNUL)
+        let refused = HDIUtil.changePassword("/nonexistent.sparsebundle", old: Secret("a\nb"), new: Secret("c"))
+        #expect(refused.status == -1)
+    }
+
+    @Test("private mount folder: created 0700 only when missing or empty, removed only when empty")
+    func mountFolder() throws {
+        let base = try tempDir()
+        let folder = base.appendingPathComponent("mnt/MyVault").path
+        #expect(MountFolder.prepare(folder) == nil)
+        let mode = try FileManager.default.attributesOfItem(atPath: folder)[.posixPermissions] as? Int
+        #expect(mode == 0o700)
+        #expect(MountFolder.prepare(folder) == nil) // empty and already there: fine
+        chmod(folder, 0o755)
+        #expect(MountFolder.prepare(folder) == nil)
+        let tightened = try FileManager.default.attributesOfItem(atPath: folder)[.posixPermissions] as? Int
+        #expect(tightened == 0o700) // an existing empty folder is made private too
+        try "x".write(toFile: folder + "/stray.txt", atomically: true, encoding: .utf8)
+        #expect(MountFolder.prepare(folder)?.contains("isn't empty") == true)
+        MountFolder.remove(folder)
+        #expect(FileManager.default.fileExists(atPath: folder)) // not empty: kept
+        try FileManager.default.removeItem(atPath: folder + "/stray.txt")
+        MountFolder.remove(folder)
+        #expect(!FileManager.default.fileExists(atPath: folder))
+        let file = base.appendingPathComponent("file").path
+        try "x".write(toFile: file, atomically: true, encoding: .utf8)
+        #expect(MountFolder.prepare(file)?.contains("is a file") == true)
+    }
+
+    @Test("stale private mount folders: configured, not mounted, not being unlocked right now")
+    func staleFolders() {
+        let a = Vault(name: "A", imagePath: "/Users/alice/Vaults/A.sparsebundle", mountPoint: "/Users/alice/mnt/A")
+        let b = Vault(name: "B", imagePath: "/Users/alice/Vaults/B.sparsebundle", mountPoint: "/Users/alice/mnt/B")
+        let c = Vault(name: "C", imagePath: "/Users/alice/Vaults/C.sparsebundle") // /Volumes: never touched
+        let mounted = [HDIUtil.resolve(a.imagePath): Mount(path: "/Users/alice/mnt/A", readOnly: false)]
+        #expect(MountFolder.stale(vaults: [a, b, c], mounted: mounted) == ["/Users/alice/mnt/B"])
+        #expect(MountFolder.stale(vaults: [a, b, c], mounted: mounted, attaching: ["B"]).isEmpty)
+        #expect(MountFolder.stale(vaults: [a, b, c], mounted: [:]) == ["/Users/alice/mnt/A", "/Users/alice/mnt/B"])
+    }
+
+    @Test("CLI: parse, usage errors, never a password")
+    func cli() {
+        #expect(CLI.parse(["status"]) == .status(json: false))
+        #expect(CLI.parse(["status", "--json"]) == .status(json: true))
+        #expect(CLI.parse(["path", "My Vault"]) == .path("My Vault"))
+        #expect(CLI.parse(["path"]) == .path(""))
+        #expect(CLI.parse(["lock", "A", "--wait", "5"]) == .lock("A", wait: 5))
+        #expect(CLI.parse(["lock", "--all"]) == .lockAll(wait: nil))
+        #expect(CLI.parse(["unlock", "A", "--readonly", "--wait", "60"]) == .unlock("A", readOnly: true, wait: 60))
+        #expect(CLI.parse(["unlock"]) == .unlock("", readOnly: false, wait: nil))
+        #expect(CLI.parse(["open", "A"]) == .open("A"))
+        #expect(CLI.parse(["help"]) == .help)
+        for bad in [[], ["bogus"], ["status", "A"], ["lock", "--all", "A"], ["unlock", "A", "B"], ["unlock", "--wait"],
+                    ["unlock", "--wait", "-1"], ["unlock", "--password", "x"], ["unlock", "A", "--stdin"], ["path", "--json"]] {
+            #expect(CLI.parse(bad) == nil, "\(bad)")
+        }
+        let config = sample
+        let vault = config.vaults[0]
+        let locked = CLI.statusText(config, mounted: [:])
+        #expect(locked == "MyVault (default): locked")
+        let mounted = [HDIUtil.resolve(vault.imagePath): Mount(path: "/Volumes/MyVault", readOnly: true)]
+        #expect(CLI.statusText(config, mounted: mounted) == "MyVault (default): unlocked at /Volumes/MyVault (read-only)")
+        let json = CLI.statusJSON(config, mounted: mounted)
+        #expect(json.contains(#""mountPoint" : "/Volumes/MyVault""#) && json.contains(#""readOnly" : true"#))
+        #expect(CLIExit.usage.rawValue == 64 && CLIExit.timeout.rawValue == 3 && CLIExit.noSuchVault.rawValue == 2)
+    }
+
+    @Test("panic presets, event ring, password advice, pause duration")
+    func smallPieces() {
+        #expect(PanicHotkey.default.title == "⌃⌥⌘L" && PanicHotkey.preset("off") == nil)
+        #expect(Set(PanicHotkey.presets.map(\.id)).count == PanicHotkey.presets.count)
+        #expect(Config.seed.panicHotkey == "ctrl-opt-cmd-L" && Config.seed.panicForces)
+
+        var log = EventLog(capacity: 3)
+        for i in 1...5 { log.add("event \(i)") }
+        #expect(log.events.map(\.text) == ["event 3", "event 4", "event 5"] && log.last?.text == "event 5")
+
+        #expect(PasswordAdvice.warnings(for: "short", names: []) == ["It's shorter than 12 characters."])
+        #expect(PasswordAdvice.warnings(for: "my-personal-vault-2026!", names: ["Personal"]) == ["It contains the vault's name."])
+        #expect(PasswordAdvice.warnings(for: "correct horse battery", names: ["Personal", "ab"]).isEmpty)
+
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        var pause = AutoLockPause()
+        pause.start(at: t0, duration: 15 * 60)
+        #expect(pause.isActive(at: t0.addingTimeInterval(14 * 60)) && !pause.isActive(at: t0.addingTimeInterval(15 * 60)))
+    }
+
     @Test("hand-off only when nothing is in progress")
     func handOff() {
         func can(isAgent: Bool = false, disabled: Bool = false, atLogin: Bool = true, enabled: Bool = true,
@@ -166,22 +296,31 @@ struct VaultBarCoreTests {
         #expect(!shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: "0.1.4 (5)", activity: Activity(paused: true)))
     }
 
-    @Test("helper scripts: verified hand-off with fallback, and relaunch by path once the bundle is back")
+    @Test("helper scripts: hand-off waits for the agent's own pid, relaunch by path or by bundle id")
     func helperScripts() throws {
         let handOff = HelperScript.handOff(uid: 501, label: "com.example.agent")
         #expect(handOff.hasPrefix("sleep 1; /bin/launchctl kickstart gui/501/com.example.agent; "))
-        #expect(handOff.contains("/usr/bin/pgrep -x -U 501 VaultBar >/dev/null && exit 0"))
+        #expect(handOff.components(separatedBy: "/bin/launchctl kickstart gui/501/com.example.agent").count == 3) // twice
+        #expect(handOff.contains("/bin/launchctl print gui/501/com.example.agent 2>/dev/null | /usr/bin/grep -q '^[[:space:]]*pid = ' && exit 0"))
+        #expect(!handOff.contains("pgrep")) // any VaultBar isn't enough: it must be the agent
         #expect(handOff.hasSuffix(#"/usr/bin/open -n "$1" --args --no-handoff"#))
-        #expect(!handOff.contains("kickstart gui/501/com.example.agent ||")) // kickstart's 0 proves nothing
+
+        // The pid check really matches launchctl's indented "pid = " line and not other lines.
+        let probe = #"printf '%s\n' "$1" | /usr/bin/grep -q '^[[:space:]]*pid = ' && echo yes || echo no"#
+        #expect(Tool.run("/bin/sh", ["-c", probe, "sh", "\tpid = 4242"]).stdout == "yes\n")
+        #expect(Tool.run("/bin/sh", ["-c", probe, "sh", "\tlast exit code = 78: EX_CONFIG"]).stdout == "no\n")
 
         // Run the relaunch script for real with `open` swapped for `echo`, against a temp "bundle".
+        func relaunch(_ bundle: URL) -> String {
+            let script = HelperScript.relaunch(waitSeconds: 1).replacingOccurrences(of: "sleep 1; ", with: "")
+                .replacingOccurrences(of: "/usr/bin/open -n", with: "echo opened")
+            return Tool.run("/bin/sh", ["-c", script, "sh", bundle.path]).stdout
+        }
         let bundle = try tempDir().appendingPathComponent("My App.app")
+        #expect(relaunch(bundle) == "opened -b com.padina.vaultbar\n") // never came back: by bundle id
         try FileManager.default.createDirectory(at: bundle.appendingPathComponent("Contents"), withIntermediateDirectories: true)
         try Data().write(to: bundle.appendingPathComponent("Contents/Info.plist"))
-        let script = HelperScript.relaunch().replacingOccurrences(of: "sleep 1; ", with: "")
-            .replacingOccurrences(of: "/usr/bin/open -n", with: "echo opened")
-        let result = Tool.run("/bin/sh", ["-c", script, "sh", bundle.path])
-        #expect(result.ok && result.stdout == "opened \(bundle.path)\n")
+        #expect(relaunch(bundle) == "opened \(bundle.path)\n")
     }
 
     @Test("what each action does: lock, open in Finder, or prompt (and open after) per openAfterUnlock")
@@ -354,4 +493,59 @@ func endToEnd() throws {
     print("e2e force detach: status \(forced.status) \(forced.output)")
     #expect(forced.ok)
     #expect(HDIUtil.mounted().mountPoint(of: vault) == nil)
+
+    // 8. read-only + hidden at a private mount folder that exists only while unlocked
+    let folder = scratch.appendingPathComponent("mnt/VaultBarTest").path
+    #expect(!fm.fileExists(atPath: folder))
+    #expect(MountFolder.prepare(folder) == nil)
+    let privateMount = HDIUtil.attach(image, mountPoint: folder, hidden: true, readOnly: true, secret: Secret(password))
+    print("e2e private read-only attach: status \(privateMount.status)")
+    try #require(privateMount.ok, "\(privateMount.output)")
+    let mount = try #require(HDIUtil.mounted().mount(of: vault))
+    print("e2e private mount: \(mount.path) readOnly=\(mount.readOnly)")
+    #expect(HDIUtil.resolve(mount.path) == HDIUtil.resolve(folder) && mount.readOnly)
+    #expect(try String(contentsOfFile: folder + "/hello.txt", encoding: .utf8) == "hello vault")
+    #expect(throws: (any Error).self) { try "nope".write(toFile: folder + "/new.txt", atomically: false, encoding: .utf8) }
+    let visible = fm.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? []
+    #expect(!visible.contains { HDIUtil.resolve($0.path) == HDIUtil.resolve(folder) }) // -nobrowse
+    let config = Config(defaultVault: vault.name, autoLock: AutoLock(onSleep: true, onScreenLock: true, idleMinutes: 15),
+                        launchAtLogin: false, vaults: [Vault(name: vault.name, imagePath: image, mountPoint: folder, hidden: true)])
+    let json = CLI.statusJSON(config, mounted: HDIUtil.mounted())
+    print("e2e cli status --json: \(json.replacingOccurrences(of: "\n", with: " "))")
+    #expect(json.contains(#""readOnly" : true"#) && json.contains(#""unlocked" : true"#) && json.contains(folder))
+    let detachedPrivate = HDIUtil.detach(mount.path, force: false)
+    #expect(detachedPrivate.ok)
+    MountFolder.remove(folder)
+    print("e2e private folder after lock exists=\(fm.fileExists(atPath: folder))")
+    #expect(!fm.fileExists(atPath: folder))
+    #expect(CLI.statusText(config, mounted: HDIUtil.mounted()) == "VaultBarTest (default): locked")
+
+    // 8b. ejected outside VaultBar (plain hdiutil detach): the cleanup finds and removes the empty folder
+    #expect(MountFolder.prepare(folder) == nil)
+    try #require(HDIUtil.attach(image, mountPoint: folder, hidden: true, secret: Secret(password)).ok)
+    let outside = Tool.run("/usr/bin/hdiutil", ["detach", folder])
+    print("e2e outside detach: status \(outside.status) folder left behind=\(fm.fileExists(atPath: folder))")
+    #expect(outside.ok && fm.fileExists(atPath: folder)) // hdiutil leaves it
+    let stale = MountFolder.stale(vaults: config.vaults, mounted: HDIUtil.mounted())
+    #expect(stale.map(HDIUtil.resolve) == [HDIUtil.resolve(folder)])
+    stale.forEach(MountFolder.remove)
+    print("e2e after cleanup folder exists=\(fm.fileExists(atPath: folder))")
+    #expect(!fm.fileExists(atPath: folder))
+
+    // 9. change the password: the new one opens it, the old one no longer does, the data is untouched
+    let newPassword = "second pass ü 2"
+    let changed = HDIUtil.changePassword(image, old: Secret(password), new: Secret(newPassword))
+    print("e2e change password: status \(changed.status) \(changed.output)")
+    try #require(changed.ok)
+    let oldAfter = HDIUtil.attach(image, mountPoint: folder, secret: Secret(password))
+    print("e2e old password after change: status \(oldAfter.status) \(oldAfter.output)")
+    #expect(!oldAfter.ok && oldAfter.isAuthError)
+    #expect(MountFolder.prepare(folder) == nil)
+    let newAfter = HDIUtil.attach(image, mountPoint: folder, hidden: true, readOnly: true, secret: Secret(newPassword))
+    print("e2e new password after change: status \(newAfter.status)")
+    try #require(newAfter.ok, "\(newAfter.output)")
+    #expect(try String(contentsOfFile: folder + "/hello.txt", encoding: .utf8) == "hello vault")
+    #expect(HDIUtil.detach(folder, force: true).ok)
+    MountFolder.remove(folder)
+    #expect(!fm.fileExists(atPath: folder))
 }

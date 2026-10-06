@@ -31,6 +31,24 @@ The password is never stored anywhere.
 - **One click** — left-click the menu bar icon to lock or unlock your default vault. Right-click for every vault
   (Unlock… / Lock, **Open in Finder** or **Unlock & Open…**), Lock All, New Vault…, Add Existing Vault…, Settings….
 - **Open in Finder after unlocking** (optional setting), or per vault with Open / `vaultbar://open`.
+- **Read-only unlock**: per vault by default, or once with ⌥ in the menu ("Unlock Read-Only…"), `?readonly=1` or
+  `vaultbar unlock --readonly`. Nothing can be written, and a forced lock can't lose anything.
+- **Private mount**: per vault, mount at a folder you choose (e.g. `~/Vaults/mnt/Work`) instead of `/Volumes`, and
+  optionally **hidden from Finder** (`-nobrowse`: not in the sidebar, Desktop or file pickers). The folder exists
+  only while the vault is unlocked: VaultBar creates it (mode 700) right before unlocking and removes it after
+  locking, also when the vault is ejected some other way (Finder, `hdiutil detach`, another app), so a locked vault
+  leaves no empty folder anything could write into. It refuses a non-empty folder and any
+  folder that syncs to a cloud.
+- **Command line**: `vaultbar status --json`, `vaultbar path Work`, `vaultbar unlock Work --wait 60`, … (see below).
+- **Panic lock**: a global hotkey (default ⌃⌥⌘L, no Accessibility permission) locks every vault at once, forcing busy
+  ones unless you turn that off. ⌥-click the icon to lock all without forcing; `vaultbar://lockall`.
+- **Notifications** when idle or screen-lock auto-lock locks a vault (sleep locks are silent), before idle auto-lock
+  force-locks a busy one (with **Keep unlocked 15 min**), and when a lock fails (sleep included). The wording never names a vault: notifications can show on the lock screen.
+- **History**: the menu shows the last event ("Last: Locked Work (idle 15 min), 10:42"); **History…** lists the last
+  50. Kept in memory only.
+- **Change password…** (Settings, per vault, while it's locked), with a check that the new password opens the image.
+- **Unlock prompt hints**: Caps Lock and the current keyboard layout, the usual causes of a "wrong" password.
+  VoiceOver announces the prompt; Settings controls are labelled.
 - **Password popup** that never saves anything: no Keychain, no "remember password", no clipboard.
 - **Auto-lock**, for every vault:
   - on **sleep**: forced, immediately;
@@ -86,6 +104,9 @@ notices the new version, restarts into it once nothing is in progress, and re-re
 
 If a vault is busy when you lock it, VaultBar asks before forcing it. Forcing can lose unsaved changes in open apps.
 
+Hold ⌥ in the menu to swap **Unlock…** for **Unlock Read-Only…** (or **Unlock Read-Write…** for a vault that unlocks
+read-only by default). ⌥-click the menu bar icon to lock everything. The menu shows "(read-only)" for read-only mounts.
+
 ## Config
 
 `~/.config/vaultbar/vaults.json` (mode 600, never holds a password). Settings edits it for you:
@@ -97,9 +118,12 @@ If a vault is busy when you lock it, VaultBar asks before forcing it. Forcing ca
   "launchAtLogin": true,
   "raycastScriptsDir": "~/Raycast",
   "openAfterUnlock": false,
+  "panicHotkey": "ctrl-opt-cmd-L",
+  "panicForces": true,
   "vaults": [
     { "name": "Personal", "imagePath": "~/Vaults/Personal.sparsebundle" },
-    { "name": "Work", "imagePath": "~/Vaults/Work.sparsebundle" }
+    { "name": "Work", "imagePath": "~/Vaults/Work.sparsebundle",
+      "mountPoint": "~/Vaults/mnt/Work", "hidden": true, "readOnly": true }
   ]
 }
 ```
@@ -107,6 +131,10 @@ If a vault is busy when you lock it, VaultBar asks before forcing it. Forcing ca
 - `idleMinutes: 0` turns idle locking off. `raycastScriptsDir` is optional (no scripts without it).
 - `openAfterUnlock: true` opens the vault in Finder after every unlock: the menu bar click, the menu's Unlock…,
   `vaultbar://unlock` and the Raycast Unlock script. Default `false`.
+- Per vault, all optional: `mountPoint` (a private mount folder; without it macOS uses `/Volumes/<volume>`), `hidden`
+  (`-nobrowse`), `readOnly` (the default unlock mode).
+- `panicHotkey`: `ctrl-opt-cmd-L` (default), `ctrl-opt-cmd-K`, `ctrl-shift-cmd-L`, `opt-shift-cmd-L` or `off`.
+  `panicForces: false` makes it ask for busy vaults instead of forcing them.
 - Vaults are matched by their image file, so a volume that macOS renamed to `Personal 1` still shows the right state.
 - Removing a vault in Settings only removes it from the list. VaultBar never deletes an image file.
 
@@ -117,6 +145,8 @@ vaultbar://unlock/<name>
 vaultbar://lock/<name>
 vaultbar://toggle/<name>
 vaultbar://open/<name>
+vaultbar://unlock/<name>?readonly=1
+vaultbar://lockall
 ```
 
 The name is URL-encoded (`My%20Vault`); an empty name means the default vault.
@@ -126,6 +156,39 @@ The name is URL-encoded (`My%20Vault`); an empty name means the default vault.
 - **lock** locks (asks before forcing a busy vault). **toggle** locks or unlocks.
 - **open** opens the vault in Finder; if it is locked, it asks for the password first, then opens it.
   Cancel does nothing.
+- `?readonly=1` (or `0`) overrides the vault's read-only setting for that unlock. **lockall** locks every vault
+  (asks before forcing a busy one).
+
+## Command line
+
+The cask links `vaultbar` into your PATH (built from source: `/Applications/VaultBar.app/Contents/MacOS/VaultBar`
+with the same arguments).
+
+```
+vaultbar status [--json]
+vaultbar path [<vault>]
+vaultbar lock [<vault>] [--wait <seconds>]
+vaultbar lock --all [--wait <seconds>]
+vaultbar unlock [<vault>] [--readonly] [--wait <seconds>]
+vaultbar open [<vault>]
+```
+
+No `<vault>` means the default vault. `status` and `path` only read; `lock`, `unlock` and `open` send the matching
+`vaultbar://` link, which also starts VaultBar if it isn't running. **`unlock` never takes a password** (not from
+arguments, the environment or stdin): it opens the same popup, and a person types it. `--wait` waits until the vault
+is unlocked (then prints its path) or locked.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | done |
+| 1 | locked / not mounted (`path`), or VaultBar couldn't be reached |
+| 2 | no such vault (or no default vault) |
+| 3 | `--wait` timed out |
+| 64 | usage error (unknown command or option) |
+
+```bash
+vaultbar unlock Work --wait 60 && my-agent --root "$(vaultbar path Work)"; vaultbar lock Work
+```
 
 ## Raycast
 
@@ -145,10 +208,33 @@ never through Raycast. VaultBar only ever deletes scripts it wrote itself (marke
   process's stdin, closed right after writing. An empty password is refused before any tool runs, so the system's
   own disk-image password dialog (with its "Remember password in my keychain" box) never appears.
 - Password bytes are zeroed after use. Best effort: the Swift `String` the text field hands over can't be wiped.
-- No "change password": `hdiutil chpass` doesn't work on encrypted sparse bundles.
+- **Change password…** uses `diskutil image --stdinpassphrase chpass` (old and new password on stdin), then checks
+  that the new one opens the image. It re-wraps the key; it does not re-encrypt the data, so copies of the image made
+  before the change (backups, snapshots) still open with the old password. For a full re-key, create a new vault and
+  copy the files over.
+- The command line and the URL scheme have no password parameter; unlocking always means a person typing.
+- Notifications never name a vault (they can show on the lock screen). History is kept in memory only.
 - Lock events are logged (vault name and reason only) under the `com.padina.vaultbar` subsystem:
   `log show --predicate 'subsystem == "com.padina.vaultbar"' --info --last 1h`.
 - Encryption is macOS's own (DiskImages, AES-256). VaultBar is a front end; it makes no network connections.
+
+## Where plaintext can leak
+
+VaultBar keeps the vault itself locked, but macOS and your apps can keep copies or traces of what you opened:
+
+- **QuickLook thumbnails**: previews of vault files stay in the QuickLook cache after locking. Clear it with
+  `qlmanage -r cache`.
+- **Recent items**: apps' Open Recent lists and Finder's Recents remember file names and paths (in
+  `~/Library/Application Support/com.apple.sharedfilelist`). The files stay locked; the names don't.
+- **Screenshots** of vault content land on your Desktop (or wherever screenshots go), outside the vault.
+- **Clipboard managers** keep whatever you copied from vault documents.
+- **Local AI / LLM apps** store conversations, tool results and logs (often in a folder in your home directory).
+  Anything a model read from the vault can stay there.
+- **Spotlight**: turn indexing off for each vault once (`sudo mdutil -i off "<mount point>"`).
+
+Safe by construction: the volume's own Trash (`.Trashes`) and document versions (`.DocumentRevisions-V100`) live
+inside the encrypted image; swap is encrypted on Apple silicon and with FileVault; Time Machine backs up the image's
+encrypted bands, not the decrypted files.
 
 ## Build from source
 

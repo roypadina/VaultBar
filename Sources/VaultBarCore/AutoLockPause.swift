@@ -24,7 +24,9 @@ public struct AutoLockPause: Sendable {
 
     public func isActive(at now: Date = Date()) -> Bool { until.map { now < $0 } ?? false }
 
-    public mutating func start(at now: Date = Date()) { until = now.addingTimeInterval(Self.duration) }
+    public mutating func start(at now: Date = Date(), duration: TimeInterval = Self.duration) {
+        until = now.addingTimeInterval(duration)
+    }
 
     public mutating func resume() { until = nil }
 

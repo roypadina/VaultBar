@@ -35,18 +35,24 @@ public func shouldRelaunchForUpdate(running: String, onDisk: String?, activity: 
 
 /// `/bin/sh -c` scripts for the detached helper. The app bundle path is passed as `$1`, never spliced in.
 public enum HelperScript {
-    /// Start the login agent once this copy has exited, then make sure some VaultBar runs: `kickstart` returns 0
-    /// even when the spawn then fails, so check for the process and fall back to opening the app without a hand-off.
+    /// Start the login agent once this copy has exited, and check that the agent itself runs (`launchctl print`
+    /// shows its `pid =`): `kickstart` returns 0 even when the spawn then fails. Two tries, 5 s each, then fall back
+    /// to opening the app without a hand-off, so VaultBar never ends up not running.
     public static func handOff(uid: UInt32, label: String) -> String {
-        "sleep 1; /bin/launchctl kickstart gui/\(uid)/\(label); "
-            + "for i in 1 2 3 4 5; do sleep 1; /usr/bin/pgrep -x -U \(uid) VaultBar >/dev/null && exit 0; done; "
+        let service = "gui/\(uid)/\(label)"
+        let wait = "for i in 1 2 3 4 5; do sleep 1; "
+            + "/bin/launchctl print \(service) 2>/dev/null | /usr/bin/grep -q '^[[:space:]]*pid = ' && exit 0; done; "
+        return "sleep 1; /bin/launchctl kickstart \(service); " + wait
+            + "/bin/launchctl kickstart \(service); " + wait
             + #"/usr/bin/open -n "$1" --args --no-handoff"#
     }
 
     /// After an upgrade: wait (up to a minute) until the new bundle is in place, then open it. That copy refreshes
-    /// the login agent registration and hands off. By path, so a moved-away old copy can't be picked.
-    public static func relaunch() -> String {
-        #"sleep 1; for i in $(/usr/bin/seq 60); do [ -f "$1/Contents/Info.plist" ] && break; sleep 1; done; "#
-            + #"/usr/bin/open -n "$1""#
+    /// the login agent registration and hands off. By path, so a moved-away old copy can't be picked; if the
+    /// bundle never comes back (the app was moved elsewhere), let LaunchServices find it by bundle id.
+    public static func relaunch(waitSeconds: Int = 60) -> String {
+        #"sleep 1; for i in $(/usr/bin/seq "# + "\(waitSeconds)"
+            + #"); do [ -f "$1/Contents/Info.plist" ] && exec /usr/bin/open -n "$1"; sleep 1; done; "#
+            + "exec /usr/bin/open -n -b com.padina.vaultbar"
     }
 }

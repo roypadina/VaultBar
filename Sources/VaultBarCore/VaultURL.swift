@@ -2,6 +2,22 @@ import Foundation
 
 public enum VaultAction: String, Sendable {
     case unlock, lock, toggle, open
+    /// `vaultbar://lockall`: no vault name.
+    case lockAll = "lockall"
+}
+
+public struct VaultRequest: Equatable, Sendable {
+    public var action: VaultAction
+    /// Decoded; "" means the default vault.
+    public var name: String
+    /// `?readonly=1` / `?readonly=0`; nil: the vault's own setting.
+    public var readOnly: Bool?
+
+    public init(action: VaultAction, name: String, readOnly: Bool? = nil) {
+        self.action = action
+        self.name = name
+        self.readOnly = readOnly
+    }
 }
 
 /// What an action does to a vault in its current state.
@@ -19,7 +35,8 @@ public extension VaultAction {
     func step(unlocked: Bool, openAfterUnlock: Bool) -> VaultStep {
         switch (self, unlocked) {
         case (.unlock, true), (.lock, false): .nothing
-        case (.lock, true), (.toggle, true): .lock
+        case (.lock, true), (.toggle, true), (.lockAll, true): .lock
+        case (.lockAll, false): .nothing
         case (.open, true): .openInFinder
         case (.open, false): .promptUnlock(thenOpen: true)
         case (.unlock, false), (.toggle, false): .promptUnlock(thenOpen: openAfterUnlock)
@@ -30,16 +47,19 @@ public extension VaultAction {
 public enum VaultURL {
     public static let scheme = "vaultbar"
 
-    /// `vaultbar://<action>/<url-encoded name>`. The name comes back decoded; "" means the default vault.
-    public static func parse(_ url: URL) -> (action: VaultAction, name: String)? {
+    /// `vaultbar://<action>/<url-encoded name>[?readonly=1]`.
+    public static func parse(_ url: URL) -> VaultRequest? {
         guard url.scheme?.lowercased() == scheme,
               let action = url.host.flatMap({ VaultAction(rawValue: $0.lowercased()) }) else { return nil }
         let name = url.path(percentEncoded: false).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return (action, name)
+        let readOnly = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+            .first { $0.name.lowercased() == "readonly" }?.value.map { ["1", "true", "yes"].contains($0.lowercased()) }
+        return VaultRequest(action: action, name: name, readOnly: readOnly)
     }
 
-    public static func make(_ action: VaultAction, name: String) -> String {
+    public static func make(_ action: VaultAction, name: String, readOnly: Bool? = nil) -> String {
         "\(scheme)://\(action.rawValue)/\(name.addingPercentEncoding(withAllowedCharacters: unreserved)!)"
+            + (readOnly.map { "?readonly=\($0 ? 1 : 0)" } ?? "")
     }
 
     /// ASCII only, so the URL is safe to drop inside double quotes in a shell script.

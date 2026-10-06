@@ -24,8 +24,18 @@ struct SettingsView: View {
                     Spacer()
                     TextField("", value: controller.binding(\.autoLock.idleMinutes), format: .number)
                         .frame(width: 50)
+                        .accessibilityLabel("Idle minutes before locking, 0 for off")
                     Stepper("", value: controller.binding(\.autoLock.idleMinutes), in: 0...600).labelsHidden()
+                        .accessibilityLabel("Idle minutes")
                 }
+            }
+            Section("Panic lock") {
+                Picker("Hotkey that locks every vault", selection: controller.binding(\.panicHotkey)) {
+                    ForEach(PanicHotkey.presets, id: \.id) { Text($0.title).tag($0.id) }
+                    Text("Off").tag("off")
+                }
+                Toggle("Force busy vaults (unsaved changes in open apps may be lost)", isOn: controller.binding(\.panicForces))
+                Text("⌥-click the menu bar icon to lock all without forcing.").font(.caption).foregroundStyle(.secondary)
             }
             Section {
                 Toggle("Launch at login (auto-lock needs VaultBar running)", isOn: controller.binding(\.launchAtLogin))
@@ -37,8 +47,10 @@ struct SettingsView: View {
                         Text(controller.config.raycastScriptsDir ?? "Off").foregroundStyle(.secondary)
                             .lineLimit(1).truncationMode(.middle)
                         Button("Choose…") { controller.chooseRaycastFolder() }
+                            .accessibilityLabel("Choose the Raycast scripts folder")
                         if controller.config.raycastScriptsDir != nil {
                             Button("Turn Off") { controller.update { $0.raycastScriptsDir = nil } }
+                                .accessibilityLabel("Stop writing Raycast scripts")
                         }
                     }
                 }
@@ -73,13 +85,43 @@ private struct VaultRow: View {
             }
             .buttonStyle(.borderless)
             .help(isDefault ? "Default vault (left-click on the menu bar icon)" : "Make default")
-            VStack(alignment: .leading) {
-                TextField("Name", text: $name).onSubmit(rename)
+            .accessibilityLabel(isDefault ? "\(vault.name) is the default vault" : "Make \(vault.name) the default vault")
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    TextField("Name", text: $name).onSubmit(rename)
+                    if name != vault.name { Button("Rename", action: rename) }
+                    Button("Remove") { controller.remove(vault) }
+                        .help("Removes it from VaultBar only. The image file stays.")
+                        .accessibilityLabel("Remove \(vault.name) from VaultBar (the image file stays)")
+                }
                 Text(vault.imagePath).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                HStack {
+                    Toggle("Read-only", isOn: controller.binding(vault, \.isReadOnly))
+                        .help("Unlock read-only by default; ⌥ in the menu for the other mode")
+                    Toggle("Hidden from Finder", isOn: controller.binding(vault, \.isHidden))
+                        .help("Mount with -nobrowse: not in Finder's sidebar, Desktop or file pickers")
+                    Spacer()
+                    Button("Change Password…") { controller.showChangePassword(vault) }
+                        .accessibilityLabel("Change the password of \(vault.name)")
+                }
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+                HStack {
+                    Text("Mounts at \(vault.mountPoint ?? "/Volumes (default)")")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Button("Private Folder…") { controller.chooseMountFolder(vault) }
+                        .help("Mount at a folder of your choice; it exists only while the vault is unlocked")
+                        .accessibilityLabel("Choose a private mount folder for \(vault.name)")
+                    if vault.mountPoint != nil {
+                        Button("Use /Volumes") { controller.update { config in
+                            if let index = config.vaults.firstIndex(where: { $0.name == vault.name }) { config.vaults[index].mountPoint = nil }
+                        } }
+                        .accessibilityLabel("Mount \(vault.name) under /Volumes again")
+                    }
+                }
+                .controlSize(.small)
             }
-            if name != vault.name { Button("Rename", action: rename) }
-            Button("Remove") { controller.remove(vault) }
-                .help("Removes it from VaultBar only. The image file stays.")
         }
     }
 
@@ -141,8 +183,10 @@ struct NewVaultView: View {
             TextField("Max size in GB (sparse, grows as needed)", value: $sizeGB, format: .number)
             SecureField("Password", text: $password)
             SecureField("Confirm password", text: $confirm)
-            if !password.isEmpty && password.count < 12 {
-                Text("Under 12 characters. A longer password is much stronger.").foregroundStyle(.orange)
+            if !password.isEmpty {
+                ForEach(PasswordAdvice.warnings(for: password, names: [name, volume]), id: \.self) {
+                    Text($0).foregroundStyle(.orange)
+                }
             }
             if let message = error ?? problem {
                 Text(message).foregroundStyle(error == nil ? Color.secondary : Color.red)
@@ -248,5 +292,109 @@ struct AboutView: View {
         }
         .padding(24)
         .frame(width: 380)
+    }
+}
+
+struct HistoryView: View {
+    @ObservedObject var controller: AppController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if controller.history.events.isEmpty {
+                Text("Nothing yet.").foregroundStyle(.secondary)
+            } else {
+                List(Array(controller.history.events.reversed().enumerated()), id: \.offset) { _, event in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(event.date.formatted(date: .omitted, time: .standard)).monospacedDigit().foregroundStyle(.secondary)
+                        Text(event.text)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+                .frame(minHeight: 240)
+            }
+            Text("The last 50 events, kept in memory only: cleared when VaultBar quits.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .frame(width: 460)
+    }
+}
+
+struct ChangePasswordView: View {
+    let controller: AppController
+    let vault: Vault
+    let close: () -> Void
+    @State private var current = ""
+    @State private var new = ""
+    @State private var confirm = ""
+    @State private var error: String?
+    @State private var working = false
+
+    private var warnings: [String] {
+        new.isEmpty ? [] : PasswordAdvice.warnings(
+            for: new, names: [vault.name, URL(fileURLWithPath: vault.imagePath).deletingPathExtension().lastPathComponent])
+    }
+
+    private var problem: String? {
+        if current.isEmpty { return "Enter the current password." }
+        if new.isEmpty { return "Enter a new password." }
+        if new != confirm { return "The new passwords don't match." }
+        if new == current { return "The new password is the same as the current one." }
+        return nil
+    }
+
+    var body: some View {
+        Form {
+            Text("Save the new password in your password manager first. There is no recovery key.")
+                .font(.headline).foregroundStyle(.orange)
+            Text("This changes the password that opens \(vault.name). It doesn't re-encrypt the data: copies of the image made earlier (backups, snapshots) still open with the old password. For a full re-key, create a new vault and copy the files over.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            SecureField("Current password", text: $current)
+            SecureField("New password", text: $new)
+            SecureField("Confirm new password", text: $confirm)
+            ForEach(warnings, id: \.self) { Text($0).foregroundStyle(.orange) }
+            if let message = error ?? problem {
+                Text(message).foregroundStyle(error == nil ? Color.secondary : Color.red).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
+                Button(working ? "Changing…" : "Change Password", action: submit)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(problem != nil || working)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 460)
+        .fixedSize(horizontal: false, vertical: true)
+        .onDisappear(perform: clear)
+    }
+
+    private func clear() {
+        current = ""
+        new = ""
+        confirm = ""
+    }
+
+    private func cancel() {
+        clear()
+        close()
+    }
+
+    private func submit() {
+        guard problem == nil else { return }
+        if !warnings.isEmpty, !controller.confirm("Use this password anyway?", warnings.joined(separator: " "), "Use It") { return }
+        let old = Secret(current), replacement = Secret(new)
+        clear()
+        working = true
+        error = nil
+        Task {
+            error = await controller.changePassword(vault, old: old, new: replacement)
+            working = false
+            if error == nil {
+                close()
+                controller.alert("Password changed", "\(vault.name) now opens with the new password only.")
+            }
+        }
     }
 }

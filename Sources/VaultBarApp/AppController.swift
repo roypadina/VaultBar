@@ -16,7 +16,9 @@ enum OnBusy {
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     @Published private(set) var config = Config.seed
-    private var mounted: [String: String] = [:]
+    private var mounted: [String: Mount] = [:]
+    /// Lock / unlock events for the menu's "Last:" line and the History window. Memory only.
+    @Published private(set) var history = EventLog()
     private var statusItem: NSStatusItem?
     private var prompting = false
     private var pendingForce = Set<String>()
@@ -24,6 +26,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private var screenLocked = false
     /// attach / detach / create calls still running (see `background`)
     private var inFlight = 0
+    /// Vaults whose private mount folder was just created for an unlock that hasn't finished.
+    private var attaching = Set<String>()
     private var windows: [String: NSWindow] = [:]
     private lazy var passwordPanel = PasswordPanel()
 
@@ -77,10 +81,16 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
             // Covers mounts and ejects from anywhere (Terminal hdiutil, Finder Eject); once more a second later
             // in case hdiutil info lags the notification.
+            // An eject outside VaultBar leaves the private mount folder behind: remove it here too.
             workspace.addObserver(forName: name, object: nil, queue: .main) { _ in
                 MainActor.assumeIsolated {
                     self.refresh()
-                    Task { try? await Task.sleep(for: .seconds(1)); self.refresh() }
+                    self.removeStaleMountFolders()
+                    Task {
+                        try? await Task.sleep(for: .seconds(1))
+                        self.refresh()
+                        self.removeStaleMountFolders()
+                    }
                 }
             }
         }
@@ -103,6 +113,9 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             MainActor.assumeIsolated { self.tick() }
         }
         refresh()
+        removeStaleMountFolders() // a crash or force quit can leave one behind
+        setUpNotifications()
+        applyPanicHotkey()
         syncScripts() // idempotent; brings scripts added in an update without pressing Regenerate
         Task { try? await Task.sleep(for: .seconds(2)); handOffIfIdle() }
     }
@@ -191,7 +204,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
                     refresh()
                     return .terminateCancel
                 }
-                log.notice("locked \(vault.name, privacy: .public): quit")
+                locked(vault, at: mountPoint, reason: "quit", forced: false)
             }
             return .terminateNow
         case .alertSecondButtonReturn:
@@ -230,6 +243,13 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
     private func mountPoint(_ vault: Vault) -> String? { mounted.mountPoint(of: vault) }
 
+    /// A locked vault must not have a private mount folder (`rmdir`: only empty ones go).
+    private func removeStaleMountFolders() {
+        for folder in MountFolder.stale(vaults: config.vaults, mounted: mounted, attaching: attaching) {
+            MountFolder.remove(folder)
+        }
+    }
+
     /// Locked: the template notebook. Unlocked / paused: the notebook in the menu bar's text colour plus a colour
     /// badge (amber open padlock / orange warning), so an open vault stands out.
     private func statusImage(badge: String?) -> NSImage? {
@@ -256,6 +276,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         let event = NSApp.currentEvent
         if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
             showMenu()
+        } else if event?.modifierFlags.contains(.option) == true {
+            lockAll() // ⌥-click: clean, asks before forcing
         } else if let vault = config.vault(named: nil) {
             perform(.toggle, on: vault, reason: "user")
         } else {
@@ -267,19 +289,23 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         refresh()
         let menu = NSMenu()
         for vault in config.vaults {
-            let unlocked = mountPoint(vault) != nil
+            let mount = mounted.mount(of: vault)
+            let state = mount.map { $0.readOnly ? "Unlocked (read-only)" : "Unlocked" } ?? "Locked"
             let header = NSMenuItem(
-                title: "\(vault.name)\(vault.name == config.defaultVault ? " (default)" : "") — \(unlocked ? "Unlocked" : "Locked")",
+                title: "\(vault.name)\(vault.name == config.defaultVault ? " (default)" : "") — \(state)",
                 action: nil, keyEquivalent: "")
-            header.image = NSImage(systemSymbolName: unlocked ? "lock.open.fill" : "lock.fill", accessibilityDescription: nil)
+            header.image = NSImage(systemSymbolName: mount != nil ? "lock.open.fill" : "lock.fill", accessibilityDescription: nil)
             header.isEnabled = false
             menu.addItem(header)
-            for (action, title) in [(unlocked ? VaultAction.lock : .unlock, unlocked ? "Lock" : "Unlock…"),
-                                    (.open, unlocked ? "Open in Finder" : "Unlock & Open…")] {
-                let item = menuItem(title, #selector(menuPerform(_:)))
-                item.representedObject = [action.rawValue, vault.name]
-                item.indentationLevel = 1
-                menu.addItem(item)
+            if mount != nil {
+                menu.addItem(command("Lock", .lock, vault))
+                menu.addItem(command("Open in Finder", .open, vault))
+            } else {
+                // ⌥ swaps "Unlock…" for the other mode.
+                menu.addItem(command(vault.isReadOnly ? "Unlock Read-Only…" : "Unlock…", .unlock, vault))
+                menu.addItem(command(vault.isReadOnly ? "Unlock Read-Write…" : "Unlock Read-Only…", .unlock, vault,
+                                     readOnly: !vault.isReadOnly, alternate: true))
+                menu.addItem(command("Unlock & Open…", .open, vault))
             }
         }
         if config.vaults.isEmpty {
@@ -290,6 +316,13 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         menu.addItem(.separator())
         menu.addItem(menuItem("Lock All", #selector(lockAll)))
         menu.addItem(menuItem(pause.isActive() ? pauseTitle : "Pause auto-lock for 1 hour", #selector(togglePause)))
+        if let last = history.last {
+            let item = NSMenuItem(title: "Last: \(last.text), \(last.date.formatted(date: .omitted, time: .shortened))",
+                                  action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+        menu.addItem(menuItem("History…", #selector(showHistory)))
         menu.addItem(.separator())
         menu.addItem(menuItem("New Vault…", #selector(newVault)))
         menu.addItem(menuItem("Add Existing Vault…", #selector(addExisting)))
@@ -311,10 +344,19 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         return item
     }
 
+    private func command(_ title: String, _ action: VaultAction, _ vault: Vault, readOnly: Bool? = nil,
+                         alternate: Bool = false) -> NSMenuItem {
+        let item = menuItem(title, #selector(menuPerform(_:)))
+        item.representedObject = VaultRequest(action: action, name: vault.name, readOnly: readOnly)
+        item.indentationLevel = 1
+        item.keyEquivalentModifierMask = alternate ? .option : []
+        item.isAlternate = alternate
+        return item
+    }
+
     @objc private func menuPerform(_ sender: NSMenuItem) {
-        guard let parts = sender.representedObject as? [String], parts.count == 2,
-              let action = VaultAction(rawValue: parts[0]), let vault = config.vault(named: parts[1]) else { return }
-        perform(action, on: vault, reason: "user")
+        guard let request = sender.representedObject as? VaultRequest, let vault = config.vault(named: request.name) else { return }
+        perform(request.action, on: vault, reason: "user", readOnly: request.readOnly)
     }
 
     @objc private func lockAll() {
@@ -322,29 +364,46 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         for vault in config.vaults { lock(vault, reason: "lock all", onBusy: .ask) }
     }
 
+    /// Global hotkey: lock every vault now; busy ones are forced unless "Panic hotkey forces" is off.
+    func panicLock() {
+        guard config.panicForces else { return lockAll() }
+        refresh()
+        for vault in config.vaults {
+            guard let mountPoint = mountPoint(vault) else { continue }
+            Task {
+                let result = await background { HDIUtil.detach(mountPoint, force: true) }
+                refresh()
+                if result.ok { locked(vault, at: mountPoint, reason: "panic hotkey", forced: true) }
+                else { lockFailed(vault, reason: "panic hotkey", notify: true) }
+            }
+        }
+    }
+
     // MARK: URL scheme
 
     private func handle(_ url: URL) {
-        guard let (action, name) = VaultURL.parse(url) else {
+        guard let request = VaultURL.parse(url) else {
             alert("Unknown VaultBar link", url.absoluteString)
             return
         }
-        guard let vault = config.vault(named: name) else {
-            alert(name.isEmpty ? "No default vault is set" : "No vault named \"\(name)\"", "Check VaultBar Settings.")
+        if request.action == .lockAll { return lockAll() }
+        guard let vault = config.vault(named: request.name) else {
+            alert(request.name.isEmpty ? "No default vault is set" : "No vault named \"\(request.name)\"", "Check VaultBar Settings.")
             return
         }
-        perform(action, on: vault, reason: "link")
+        perform(request.action, on: vault, reason: "link", readOnly: request.readOnly)
     }
 
     // MARK: Unlock / lock / open
 
-    private func perform(_ action: VaultAction, on vault: Vault, reason: String) {
+    /// `readOnly`: a one-off choice (⌥ menu item, `?readonly=`); nil uses the vault's own setting.
+    private func perform(_ action: VaultAction, on vault: Vault, reason: String, readOnly: Bool? = nil) {
         refresh()
         switch action.step(unlocked: mountPoint(vault) != nil, openAfterUnlock: config.openAfterUnlock) {
         case .nothing: break
         case .lock: lock(vault, reason: reason, onBusy: .ask)
         case .openInFinder: openInFinder(vault)
-        case .promptUnlock(let thenOpen): unlock(vault, thenOpen: thenOpen)
+        case .promptUnlock(let thenOpen): unlock(vault, thenOpen: thenOpen, readOnly: readOnly ?? vault.isReadOnly)
         }
     }
 
@@ -352,7 +411,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         if let mountPoint = mountPoint(vault) { NSWorkspace.shared.open(URL(fileURLWithPath: mountPoint)) }
     }
 
-    private func unlock(_ vault: Vault, thenOpen: Bool, error: String? = nil) {
+    private func unlock(_ vault: Vault, thenOpen: Bool, readOnly: Bool, error: String? = nil) {
         guard !prompting else {
             if passwordPanel.isVisible { passwordPanel.makeKeyAndOrderFront(nil) } // asked twice: bring it back
             return
@@ -361,35 +420,71 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         // Default run-loop mode: runs after a status menu has finished closing, so it can't take focus back.
         RunLoop.main.perform(inModes: [.default]) {
             MainActor.assumeIsolated {
-                self.passwordPanel.ask(vault: vault.name, message: error ?? "Enter the vault password.") { secret in
-                    self.attach(vault, secret, thenOpen: thenOpen)
+                self.passwordPanel.ask(vault: vault.name + (readOnly ? " (read-only)" : ""),
+                                       message: error ?? "Enter the vault password.") { secret in
+                    self.attach(vault, secret, thenOpen: thenOpen, readOnly: readOnly)
                 }
             }
         }
     }
 
-    private func attach(_ vault: Vault, _ secret: Secret?, thenOpen: Bool) {
+    private func attach(_ vault: Vault, _ secret: Secret?, thenOpen: Bool, readOnly: Bool) {
         guard let secret, !secret.isEmpty else {
             secret?.wipe()
             prompting = false
             return
         }
-        let path = vault.expandedPath
-        Task {
-            let result = await background { HDIUtil.attach(path, secret: secret) }
+        // A private mount folder exists only while the vault is unlocked: created here, removed after lock.
+        let folder = vault.expandedMountPoint
+        attaching.insert(vault.name)
+        if let folder, let problem = MountFolder.prepare(folder) {
+            attaching.remove(vault.name)
             secret.wipe()
             prompting = false
+            alert("Couldn't unlock \(vault.name)", problem)
+            return
+        }
+        let path = vault.expandedPath, hidden = vault.isHidden
+        Task {
+            let result = await background {
+                HDIUtil.attach(path, mountPoint: folder, hidden: hidden, readOnly: readOnly, secret: secret)
+            }
+            secret.wipe()
+            prompting = false
+            attaching.remove(vault.name)
             refresh()
             if result.ok {
-                log.notice("unlocked \(vault.name, privacy: .public)")
+                log.notice("unlocked \(vault.name, privacy: .public)\(readOnly ? " read-only" : "", privacy: .public)")
+                record("Unlocked \(vault.name)\(readOnly ? " (read-only)" : "")")
                 if thenOpen { openInFinder(vault) }
-            } else if result.isAuthError {
-                unlock(vault, thenOpen: thenOpen, error: "Wrong password. Try again.")
+                return
+            }
+            if let folder { MountFolder.remove(folder) }
+            if result.isAuthError {
+                unlock(vault, thenOpen: thenOpen, readOnly: readOnly, error: "Wrong password. Try again.")
             } else {
                 self.alert("Couldn't unlock \(vault.name)", result.output)
             }
         }
     }
+
+    /// After every successful detach: remove the private mount folder (the one it was actually mounted on, in case
+    /// the setting changed while unlocked) and record it.
+    private func locked(_ vault: Vault, at mountPoint: String, reason: String, forced: Bool, notify: Bool = false) {
+        if !mountPoint.hasPrefix("/Volumes/") { MountFolder.remove(mountPoint) }
+        if let folder = vault.expandedMountPoint { MountFolder.remove(folder) }
+        log.notice("\(forced ? "force-locked" : "locked", privacy: .public) \(vault.name, privacy: .public): \(reason, privacy: .public)")
+        record("\(forced ? "Force-locked" : "Locked") \(vault.name) (\(reason))")
+        if notify { self.notify("A vault was locked (\(reason)).") }
+    }
+
+    private func lockFailed(_ vault: Vault, reason: String, notify: Bool) {
+        log.error("lock failed \(vault.name, privacy: .public): \(reason, privacy: .public)")
+        record("Couldn't lock \(vault.name) (\(reason))")
+        if notify { self.notify("Couldn't lock a vault. It is still unlocked.") }
+    }
+
+    func record(_ text: String) { history.add(text) }
 
     /// Clean detach. Busy: ask (user action) or force after a grace period (auto-lock).
     private func lock(_ vault: Vault, reason: String, onBusy: OnBusy) {
@@ -398,24 +493,29 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         Task {
             let result = await background { HDIUtil.detach(mountPoint, force: false) }
             refresh()
+            let automatic = if case .forceAfter = onBusy { true } else { false }
             if result.ok {
-                log.notice("locked \(vault.name, privacy: .public): \(reason, privacy: .public)")
+                locked(vault, at: mountPoint, reason: reason, forced: false, notify: automatic)
                 return
             }
             guard result.isBusy else {
-                log.error("lock failed \(vault.name, privacy: .public): \(reason, privacy: .public)")
-                if case .ask = onBusy { alert("Couldn't lock \(vault.name)", result.output) }
+                lockFailed(vault, reason: reason, notify: automatic)
+                if !automatic { alert("Couldn't lock \(vault.name)", result.output) }
                 return
             }
             switch onBusy {
             case .ask:
                 if confirm("Vault busy — force lock?",
                            "\(vault.name) is in use. Unsaved changes in open apps may be lost.", "Force Lock") {
-                    await forceLock(vault, mountPoint, reason: reason)
+                    await forceLock(vault, mountPoint, reason: reason, notify: false)
                 }
             case .forceAfter(let delay, let trigger):
                 pendingForce.insert(vault.name)
                 log.notice("\(vault.name, privacy: .public) busy, forcing in \(Int(delay))s: \(reason, privacy: .public)")
+                record("\(vault.name) is in use, force-locking in \(Int(delay)) s (\(reason))")
+                if trigger == .idle { // the user may be right there, watching rather than typing
+                    notify("Force-locking a vault in \(Int(delay)) s. It is still in use.", keepUnlockedAction: true)
+                }
                 try? await Task.sleep(for: .seconds(delay))
                 pendingForce.remove(vault.name)
                 if pause.isActive() {
@@ -428,18 +528,18 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
                     return
                 }
                 refresh()
-                if self.mountPoint(vault) != nil { await forceLock(vault, mountPoint, reason: reason) }
+                if self.mountPoint(vault) != nil { await forceLock(vault, mountPoint, reason: reason, notify: true) }
             }
         }
     }
 
-    private func forceLock(_ vault: Vault, _ mountPoint: String, reason: String) async {
+    private func forceLock(_ vault: Vault, _ mountPoint: String, reason: String, notify: Bool) async {
         let result = await background { HDIUtil.detach(mountPoint, force: true) }
         refresh()
         if result.ok {
-            log.notice("force-locked \(vault.name, privacy: .public): \(reason, privacy: .public)")
+            locked(vault, at: mountPoint, reason: reason, forced: true, notify: notify)
         } else {
-            log.error("force lock failed \(vault.name, privacy: .public): \(reason, privacy: .public)")
+            lockFailed(vault, reason: reason, notify: true)
         }
     }
 
@@ -451,8 +551,11 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         refresh()
         for vault in config.vaults {
             guard let mountPoint = mountPoint(vault) else { continue }
-            let ok = HDIUtil.detach(mountPoint, force: true).ok
-            log.notice("\(ok ? "locked" : "lock failed") \(vault.name, privacy: .public): sleep")
+            if HDIUtil.detach(mountPoint, force: true).ok {
+                locked(vault, at: mountPoint, reason: "sleep", forced: true)
+            } else {
+                lockFailed(vault, reason: "sleep", notify: true)
+            }
         }
         refresh()
     }
@@ -461,8 +564,11 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private func tick() {
         if pause.expire() {
             log.notice("auto-lock pause expired")
+            record("Auto-lock pause ended")
             refresh()
         }
+        refresh()
+        removeStaleMountFolders() // backstop for an eject the notifications missed
         checkIdle()
         relaunchIfUpdated()
         handOffIfIdle()
@@ -487,17 +593,29 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         if pause.isActive() {
             pause.resume()
             log.notice("auto-lock resumed")
+            record("Auto-lock resumed")
             refresh()
             checkIdle()
             return
         }
-        pause.start()
-        log.notice("auto-lock paused for 1 hour")
+        pauseAutoLock(minutes: 60)
+    }
+
+    func pauseAutoLock(minutes: Int) {
+        pause.start(duration: TimeInterval(minutes * 60))
+        log.notice("auto-lock paused for \(minutes) min")
+        record("Auto-lock paused for \(minutes) min")
         refresh()
         Task {
-            try? await Task.sleep(for: .seconds(AutoLockPause.duration))
+            try? await Task.sleep(for: .seconds(minutes * 60))
             tick() // ends the pause on time; a no-op if it was resumed (or restarted and not yet due)
         }
+    }
+
+    /// The pre-force notification's "Keep unlocked 15 min"; never shortens a longer pause.
+    func keepUnlocked() {
+        if let until = pause.until, pause.isActive(), until > Date().addingTimeInterval(15 * 60) { return }
+        pauseAutoLock(minutes: 15)
     }
 
     private func autoLock(_ trigger: AutoLockTrigger, reason: String, forceAfter delay: TimeInterval) {
@@ -529,6 +647,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         }
         if old.vaults != next.vaults || old.raycastScriptsDir != next.raycastScriptsDir { syncScripts() }
         if old.launchAtLogin != next.launchAtLogin { applyLoginItem() }
+        if old.panicHotkey != next.panicHotkey { applyPanicHotkey() }
         refresh()
         return nil
     }
@@ -541,7 +660,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         guard let directory = config.raycastDirectory else { return }
         do {
             try Raycast.sync(config.vaults, in: directory)
-            if announce { alert("Raycast scripts updated", "\(config.vaults.count * 2) scripts in \(directory.path)") }
+            if announce { alert("Raycast scripts updated", "\(config.vaults.count * 3) scripts in \(directory.path)") }
         } catch {
             log.error("raycast scripts: \(error.localizedDescription, privacy: .public)")
             if announce { alert("Couldn't write Raycast scripts", error.localizedDescription) }
@@ -667,6 +786,64 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         NSWorkspace.shared.open(AboutView.koFi)
     }
 
+    @objc private func showHistory() {
+        showWindow("history", "VaultBar History", HistoryView(controller: self))
+    }
+
+    func showChangePassword(_ vault: Vault) {
+        refresh()
+        guard mountPoint(vault) == nil else { return alert("Lock \(vault.name) first", "The password can only be changed while the vault is locked.") }
+        showWindow("password", "Change Password — \(vault.name)",
+                   ChangePasswordView(controller: self, vault: vault) { [weak self] in self?.windows["password"]?.close() })
+    }
+
+    /// `diskutil image chpass`, then proves the new password opens the image (read-only, hidden, at a temporary
+    /// private folder, locked again at once). Returns an error message, or nil on success.
+    func changePassword(_ vault: Vault, old: Secret, new: Secret) async -> String? {
+        defer { old.wipe(); new.wipe() }
+        refresh()
+        guard mountPoint(vault) == nil else { return "Lock \(vault.name) first." }
+        let path = vault.expandedPath
+        let result = await background { HDIUtil.changePassword(path, old: old, new: new) }
+        guard result.ok else {
+            return "The password wasn't changed. Check the current password.\n\n\(result.output)"
+        }
+        let folder = NSTemporaryDirectory() + "vaultbar-check-\(UUID().uuidString)"
+        if let problem = MountFolder.prepare(folder) { return "The password was changed, but couldn't be checked: \(problem)" }
+        let check = await background { HDIUtil.attach(path, mountPoint: folder, hidden: true, readOnly: true, secret: new) }
+        if check.ok { _ = await background { HDIUtil.detach(folder, force: true) } }
+        MountFolder.remove(folder)
+        refresh()
+        guard check.ok else {
+            return "diskutil reported success, but the new password doesn't open \(vault.name). Try the old one.\n\n\(check.output)"
+        }
+        log.notice("password changed: \(vault.name, privacy: .public)")
+        record("Changed the password of \(vault.name)")
+        return nil
+    }
+
+    /// Settings: a binding to one vault's field, saved through `update`.
+    func binding<T>(_ vault: Vault, _ keyPath: WritableKeyPath<Vault, T>) -> Binding<T> {
+        Binding(get: { self.config.vaults.first { $0.name == vault.name }?[keyPath: keyPath] ?? vault[keyPath: keyPath] },
+                set: { value in self.update { config in
+                    if let index = config.vaults.firstIndex(where: { $0.name == vault.name }) { config.vaults[index][keyPath: keyPath] = value }
+                } })
+    }
+
+    func chooseMountFolder(_ vault: Vault) {
+        NSApp.activate()
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.message = "Choose where \(vault.name)'s private mount folder goes. VaultBar mounts it at <this folder>/\(vault.name), creating it on unlock and removing it on lock."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let folder = NSString(string: url.appendingPathComponent(vault.name).path).abbreviatingWithTildeInPath
+        update { config in
+            if let index = config.vaults.firstIndex(where: { $0.name == vault.name }) { config.vaults[index].mountPoint = folder }
+        }
+    }
+
     @objc func showSettings() {
         showWindow("settings", "VaultBar Settings", SettingsView(controller: self))
     }
@@ -729,7 +906,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
 extension AppController {
     /// Runs blocking hdiutil/diskutil work off the main thread, counted in `inFlight` so a hand-off waits for it.
-    fileprivate func background<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+    func background<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
         inFlight += 1
         defer { inFlight -= 1 }
         return await Task.detached(operation: work).value

@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import VaultBarCore
 
 /// The unlock prompt. A non-activating panel can become the key window, and so take the keyboard, without
@@ -7,7 +8,10 @@ import VaultBarCore
 final class PasswordPanel: NSPanel {
     private let message = NSTextField(wrappingLabelWithString: "")
     private let field = NSSecureTextField()
+    /// Caps Lock and the keyboard layout: the usual reasons a right password is "wrong".
+    private let hint = NSTextField(labelWithString: "")
     private var completion: ((Secret?) -> Void)?
+    private var flagsMonitor: Any?
 
     override var canBecomeKey: Bool { true }
 
@@ -27,13 +31,29 @@ final class PasswordPanel: NSPanel {
         let unlock = NSButton(title: "Unlock", target: self, action: #selector(submit))
         unlock.keyEquivalent = "\r"
         let buttons = NSStackView(views: [NSView(), cancel, unlock])
-        let stack = NSStackView(views: [message, field, buttons])
+        hint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        hint.textColor = .secondaryLabelColor
+        let stack = NSStackView(views: [message, field, hint, buttons])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
         stack.edgeInsets = NSEdgeInsets(top: 16, left: 20, bottom: 16, right: 20)
-        for view in [message, field, buttons] { view.widthAnchor.constraint(equalToConstant: 300).isActive = true }
+        for view in [message, field, hint, buttons] { view.widthAnchor.constraint(equalToConstant: 300).isActive = true }
         contentView = stack
+        DistributedNotificationCenter.default().addObserver(
+            forName: .init("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged"), object: nil, queue: .main
+        ) { [weak self] _ in MainActor.assumeIsolated { self?.updateHint() } }
+    }
+
+    private func updateHint() {
+        var parts: [String] = []
+        if NSEvent.modifierFlags.contains(.capsLock) { parts.append("Caps Lock is on") }
+        if let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+           let name = TISGetInputSourceProperty(source, kTISPropertyLocalizedName) {
+            parts.append("Keyboard: \(Unmanaged<CFString>.fromOpaque(name).takeUnretainedValue() as String)")
+        }
+        hint.stringValue = parts.joined(separator: " · ")
+        hint.textColor = parts.first == "Caps Lock is on" ? .systemOrange : .secondaryLabelColor
     }
 
     /// Shows the prompt ready to type; `completion` gets the password, or nil on Cancel / Esc.
@@ -41,6 +61,14 @@ final class PasswordPanel: NSPanel {
         title = "Unlock \(vault)"
         message.stringValue = text
         self.completion = completion
+        field.setAccessibilityLabel("Password for \(vault)")
+        updateHint()
+        if flagsMonitor == nil {
+            flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                self?.updateHint()
+                return event
+            }
+        }
         NSApp.activate() // nice to have; the panel takes the keyboard either way
         center()
         makeKeyAndOrderFront(nil)
@@ -50,6 +78,10 @@ final class PasswordPanel: NSPanel {
             guard isVisible else { return }
             makeKeyAndOrderFront(nil)
             makeFirstResponder(field)
+            // VaultBar is usually not the active app, so VoiceOver may not notice the panel on its own.
+            NSAccessibility.post(element: field, notification: .announcementRequested, userInfo: [
+                .announcement: "Unlock \(vault). \(text)", .priority: NSAccessibilityPriorityLevel.high.rawValue,
+            ])
         }
     }
 
@@ -62,6 +94,8 @@ final class PasswordPanel: NSPanel {
 
     private func finish(_ secret: Secret?) {
         field.stringValue = ""
+        if let flagsMonitor { NSEvent.removeMonitor(flagsMonitor) }
+        flagsMonitor = nil
         orderOut(nil)
         guard let completion else { secret?.wipe(); return }
         self.completion = nil
