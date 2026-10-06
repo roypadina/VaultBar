@@ -71,6 +71,10 @@ xattr -dr com.apple.quarantine /Applications/VaultBar.app
 Or download `VaultBar.zip` from the [latest release](https://github.com/roypadina/VaultBar/releases/latest),
 unzip it and move `VaultBar.app` to `/Applications`.
 
+**Upgrades** (`brew upgrade --cask vaultbar`) are picked up automatically: within about 30 s the running VaultBar
+notices the new version, restarts into it once nothing is in progress, and re-registers its login item. Coming from
+0.1.2 or older, quit VaultBar and open it once after upgrading.
+
 ## Usage
 
 1. Click the menu bar icon → **New Vault…** (or **Add Existing Vault…**).

@@ -68,7 +68,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         item.button?.action = #selector(statusItemClicked)
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusItem = item
-        applyLoginItem()
+        applyLoginItem(refreshRegistration: !isAgentInstance)
 
         let workspace = NSWorkspace.shared.notificationCenter
         workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
@@ -111,30 +111,55 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     /// supervised copy instead (it restarts after a crash). Waiting until nothing is in progress means a
     /// `vaultbar://` action that launched this copy finishes here first, so it is never lost.
     private func handOffIfIdle() {
-        let uiOpen = NSApp.modalWindow != nil || statusItem?.menu != nil || windows.values.contains(where: \.isVisible)
         guard canHandOff(isAgent: isAgentInstance, handOffDisabled: CommandLine.arguments.contains("--no-handoff"),
                          launchAtLogin: config.launchAtLogin, agentEnabled: agent.status == .enabled,
-                         prompting: prompting, inFlight: inFlight, pendingForce: pendingForce.count,
-                         paused: pause.isActive(), uiOpen: uiOpen) else { return }
-        // The helper starts the agent after this copy has exited (else the agent would see a rival and quit).
-        // If the agent can't start, it reopens this app without a hand-off, so VaultBar never ends up not running.
-        let script = "sleep 1; /bin/launchctl kickstart gui/\(getuid())/\(Self.agentLabel)"
-            + " || /usr/bin/open -n -b com.padina.vaultbar --args --no-handoff"
-        // New session: launchd's clean-up of this app's process group must not take the helper down with it.
+                         activity: activity) else { return }
+        // The helper starts the agent after this copy has exited (else the agent would see a rival and quit),
+        // then checks that VaultBar runs and otherwise reopens this app without a hand-off.
+        guard spawnHelper(HelperScript.handOff(uid: getuid(), label: Self.agentLabel)) else { return }
+        log.notice("handing off to the login agent")
+        exit(0)
+    }
+
+    /// The version this process runs, read at launch; nil without a bundle (`swift run`).
+    private let runningVersion = AppController.version(of: Bundle.main.bundleURL)
+
+    private static func version(of bundle: URL) -> String? {
+        guard let info = NSDictionary(contentsOf: bundle.appendingPathComponent("Contents/Info.plist")),
+              let short = info["CFBundleShortVersionString"] as? String else { return nil }
+        return "\(short) (\(info["CFBundleVersion"] as? String ?? "?"))"
+    }
+
+    /// An upgrade (brew) replaced or moved the bundle under this process: once idle, open the new copy and exit 0
+    /// (so launchd doesn't restart this one); the new copy refreshes the login agent and hands off to it.
+    private func relaunchIfUpdated() {
+        guard let runningVersion else { return }
+        let onDisk = Self.version(of: Bundle.main.bundleURL)
+        guard shouldRelaunchForUpdate(running: runningVersion, onDisk: onDisk, activity: activity),
+              spawnHelper(HelperScript.relaunch(), Bundle.main.bundlePath) else { return }
+        log.notice("update detected \(runningVersion, privacy: .public) → \(onDisk ?? "bundle moved away", privacy: .public)")
+        exit(0)
+    }
+
+    private var activity: Activity {
+        Activity(prompting: prompting, inFlight: inFlight, pendingForce: pendingForce.count, paused: pause.isActive(),
+                 uiOpen: NSApp.modalWindow != nil || statusItem?.menu != nil || windows.values.contains(where: \.isVisible))
+    }
+
+    /// Runs `/bin/sh -c script sh args…` detached, in a new session, so launchd's clean-up of this app's process
+    /// group doesn't take it down when this copy exits. `$1` defaults to this app's bundle path.
+    private func spawnHelper(_ script: String, _ args: String...) -> Bool {
         var attributes: posix_spawnattr_t?
         posix_spawnattr_init(&attributes)
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID))
         var pid: pid_t = 0
-        let argv: [UnsafeMutablePointer<CChar>?] = ["/bin/sh", "-c", script].map { strdup($0) } + [nil]
+        let words = ["/bin/sh", "-c", script, "sh"] + (args.isEmpty ? [Bundle.main.bundlePath] : args)
+        let argv: [UnsafeMutablePointer<CChar>?] = words.map { strdup($0) } + [nil]
         let spawned = posix_spawn(&pid, "/bin/sh", nil, &attributes, argv, environ)
         argv.forEach { free($0) }
         posix_spawnattr_destroy(&attributes)
-        guard spawned == 0 else {
-            log.error("hand-off to the login agent failed: \(spawned)")
-            return
-        }
-        log.notice("handing off to the login agent")
-        exit(0)
+        if spawned != 0 { log.error("helper failed to start: \(spawned)") }
+        return spawned == 0
     }
 
     /// Quitting with a vault unlocked leaves it unguarded, so ask. Logout/restart/shutdown carry a quit reason
@@ -439,6 +464,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             refresh()
         }
         checkIdle()
+        relaunchIfUpdated()
         handOffIfIdle()
     }
 
@@ -522,7 +548,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
-    private func applyLoginItem() {
+    private func applyLoginItem(refreshRegistration: Bool = false) {
         // 0.1.0 used a plain login item; keeping it too would start two copies at login.
         if SMAppService.mainApp.status == .enabled {
             do { try SMAppService.mainApp.unregister() } catch {
@@ -531,7 +557,13 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         }
         do {
             if config.launchAtLogin {
-                if agent.status != .enabled { try agent.register() }
+                let before = agent.status
+                // An upgrade replaces the bundle under the registration, which then points at nothing (launchd:
+                // "Could not find … Contents/MacOS/VaultBar"). Registering again from this bundle repairs it.
+                // Safe: the single-instance guard means no agent copy is running now.
+                if refreshRegistration, before != .notRegistered { try? agent.unregister() }
+                if refreshRegistration || agent.status != .enabled { try agent.register() }
+                log.notice("login agent: \(before.rawValue) -> \(self.agent.status.rawValue) (1 = enabled)")
             } else if agent.status == .enabled, !isAgentInstance {
                 try agent.unregister()
             } // else this process is the agent: unregistering now would stop it, so applicationWillTerminate does

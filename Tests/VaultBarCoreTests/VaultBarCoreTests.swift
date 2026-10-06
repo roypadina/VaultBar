@@ -139,21 +139,49 @@ struct VaultBarCoreTests {
     @Test("hand-off only when nothing is in progress")
     func handOff() {
         func can(isAgent: Bool = false, disabled: Bool = false, atLogin: Bool = true, enabled: Bool = true,
-                 prompting: Bool = false, inFlight: Int = 0, pendingForce: Int = 0, paused: Bool = false,
-                 uiOpen: Bool = false) -> Bool {
+                 activity: Activity = Activity()) -> Bool {
             canHandOff(isAgent: isAgent, handOffDisabled: disabled, launchAtLogin: atLogin, agentEnabled: enabled,
-                       prompting: prompting, inFlight: inFlight, pendingForce: pendingForce, paused: paused, uiOpen: uiOpen)
+                       activity: activity)
         }
         #expect(can())
         #expect(!can(isAgent: true))
         #expect(!can(disabled: true))
         #expect(!can(atLogin: false))
         #expect(!can(enabled: false))
-        #expect(!can(prompting: true))
-        #expect(!can(inFlight: 1)) // a lock's detach still running
-        #expect(!can(pendingForce: 1))
-        #expect(!can(paused: true))
-        #expect(!can(uiOpen: true))
+        #expect(!can(activity: Activity(prompting: true)))
+        #expect(!can(activity: Activity(inFlight: 1))) // a lock's detach still running
+        #expect(!can(activity: Activity(pendingForce: 1)))
+        #expect(!can(activity: Activity(paused: true)))
+        #expect(!can(activity: Activity(uiOpen: true)))
+    }
+
+    @Test("relaunch for an update only when the bundle changed (or vanished) and nothing is in progress")
+    func relaunchForUpdate() {
+        #expect(!shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: "0.1.3 (4)", activity: Activity()))
+        #expect(shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: "0.1.4 (5)", activity: Activity()))
+        #expect(shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: "0.1.3 (5)", activity: Activity()))
+        #expect(shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: nil, activity: Activity())) // moved away
+        #expect(!shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: "0.1.4 (5)", activity: Activity(inFlight: 1)))
+        #expect(!shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: "0.1.4 (5)", activity: Activity(prompting: true)))
+        #expect(!shouldRelaunchForUpdate(running: "0.1.3 (4)", onDisk: "0.1.4 (5)", activity: Activity(paused: true)))
+    }
+
+    @Test("helper scripts: verified hand-off with fallback, and relaunch by path once the bundle is back")
+    func helperScripts() throws {
+        let handOff = HelperScript.handOff(uid: 501, label: "com.example.agent")
+        #expect(handOff.hasPrefix("sleep 1; /bin/launchctl kickstart gui/501/com.example.agent; "))
+        #expect(handOff.contains("/usr/bin/pgrep -x -U 501 VaultBar >/dev/null && exit 0"))
+        #expect(handOff.hasSuffix(#"/usr/bin/open -n "$1" --args --no-handoff"#))
+        #expect(!handOff.contains("kickstart gui/501/com.example.agent ||")) // kickstart's 0 proves nothing
+
+        // Run the relaunch script for real with `open` swapped for `echo`, against a temp "bundle".
+        let bundle = try tempDir().appendingPathComponent("My App.app")
+        try FileManager.default.createDirectory(at: bundle.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+        try Data().write(to: bundle.appendingPathComponent("Contents/Info.plist"))
+        let script = HelperScript.relaunch().replacingOccurrences(of: "sleep 1; ", with: "")
+            .replacingOccurrences(of: "/usr/bin/open -n", with: "echo opened")
+        let result = Tool.run("/bin/sh", ["-c", script, "sh", bundle.path])
+        #expect(result.ok && result.stdout == "opened \(bundle.path)\n")
     }
 
     @Test("what each action does: lock, open in Finder, or prompt (and open after) per openAfterUnlock")
