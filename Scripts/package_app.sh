@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="${APP_NAME:-VaultBar}"
 BUNDLE_ID="${BUNDLE_ID:-com.padina.vaultbar}"
-VERSION="0.2.2"
-BUILD_NUMBER="${BUILD_NUMBER:-7}"
+VERSION="0.2.3"
+BUILD_NUMBER="${BUILD_NUMBER:-8}"
 BUILD_CONFIG="release"
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 # TEST_CONFIG_DIR (Scripts/e2e_launchd.sh only): a headless variant with its config there and no URL scheme, so it
@@ -24,12 +24,15 @@ RELEASE="${RELEASE:-}"
 cd "$ROOT_DIR"
 
 # Map the checkout path to "." so no local home-folder path ends up in the binary.
-swift build -c "$BUILD_CONFIG" -Xswiftc -file-prefix-map -Xswiftc "$ROOT_DIR=."
+# Universal binary (Apple Silicon + Intel). The output dir differs per build system, so ask SwiftPM for it.
+BUILD_ARGS=(-c "$BUILD_CONFIG" --arch arm64 --arch x86_64 -Xswiftc -file-prefix-map -Xswiftc "$ROOT_DIR=.")
+swift build "${BUILD_ARGS[@]}"
+BIN_DIR="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)"
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
-cp ".build/$BUILD_CONFIG/VaultBarApp" "$MACOS_DIR/$APP_NAME"
+cp "$BIN_DIR/VaultBarApp" "$MACOS_DIR/$APP_NAME"
 cp Assets/icons/AppIcon.icns Assets/icons/menubar-*.png "$RESOURCES_DIR/"
 
 if [[ -n "$TEST_CONFIG_DIR" ]]; then

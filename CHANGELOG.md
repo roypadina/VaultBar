@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-23
+
+### Changed
+- Universal build: now runs on Intel Macs as well as Apple Silicon.
+- README: Requirements block, Open Anyway steps for macOS 15+, selling points, honest comparison with Cryptomator and VeraCrypt, Settings and New Vault screenshots, release and universal badges.
+
 ## [0.2.2] - 2026-10-06
 
 ### Fixed
