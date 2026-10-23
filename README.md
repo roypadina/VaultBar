@@ -16,6 +16,7 @@ The password is never stored anywhere.
 [![Release](https://img.shields.io/github/v/release/roypadina/VaultBar?logo=github&label=release)](https://github.com/roypadina/VaultBar/releases/latest)
 [![Homebrew](https://img.shields.io/badge/brew-roypadina%2Ftap-FBB040?logo=homebrew&logoColor=white)](https://github.com/roypadina/homebrew-tap)
 [![CI](https://github.com/roypadina/VaultBar/actions/workflows/ci.yml/badge.svg)](https://github.com/roypadina/VaultBar/actions/workflows/ci.yml)
+[![Website](https://img.shields.io/badge/website-apps.roypadina-2F62E6)](https://apps.roypadina.synology.me/apps/vaultbar/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?logo=opensourceinitiative&logoColor=white)](LICENSE)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![Stars](https://img.shields.io/github/stars/roypadina/VaultBar?style=social)](https://github.com/roypadina/VaultBar/stargazers)
@@ -310,6 +311,15 @@ Or run `vaultbar --unregister-login-item` (or turn off **Launch at login** in Se
 `--unregister-login-item` locks every unlocked vault first. It locks what it can; if one can't be locked (e.g. it's
 busy), the login item stays and it exits 1. `--force` force-locks busy ones (unsaved changes in open apps may be lost).
 If the config exists but can't be read, or the list of mounted images can't be read, it changes nothing and exits 1.
+
+## More Mac apps by Roy
+
+Free, open-source Mac menu-bar apps and terminal tools, all on one site: **[apps.roypadina.synology.me](https://apps.roypadina.synology.me/)**.
+
+- [LanGuard](https://apps.roypadina.synology.me/apps/languard/) — Wi-Fi off when you're wired. Back on when you're not.
+- [SmartHiddenBar](https://apps.roypadina.synology.me/apps/smarthiddenbar/) — Hide the menu bar clutter. Reach it in one click.
+- [Window Organizer](https://apps.roypadina.synology.me/apps/window-organizer/) — Clear the desk in one keystroke.
+- [Obsidian Vault Git Watcher](https://apps.roypadina.synology.me/apps/obsidian-vault-git-watcher/) — Never leave a vault uncommitted again.
 
 ## Support
 
