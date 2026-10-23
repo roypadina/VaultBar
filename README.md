@@ -12,19 +12,56 @@ The password is never stored anywhere.
 
 [![macOS](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](https://swift.org)
+[![Universal](https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-555555?logo=apple&logoColor=white)](#requirements)
+[![Release](https://img.shields.io/github/v/release/roypadina/VaultBar?logo=github&label=release)](https://github.com/roypadina/VaultBar/releases/latest)
+[![Homebrew](https://img.shields.io/badge/brew-roypadina%2Ftap-FBB040?logo=homebrew&logoColor=white)](https://github.com/roypadina/homebrew-tap)
 [![CI](https://github.com/roypadina/VaultBar/actions/workflows/ci.yml/badge.svg)](https://github.com/roypadina/VaultBar/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?logo=opensourceinitiative&logoColor=white)](LICENSE)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![Stars](https://img.shields.io/github/stars/roypadina/VaultBar?style=social)](https://github.com/roypadina/VaultBar/stargazers)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-support-F16061?logo=ko-fi&logoColor=white)](https://ko-fi.com/roypadina)
 
+```bash
+brew install --cask roypadina/tap/vaultbar
+```
+
 <br>
 
-<img src="docs/screenshots/settings.png" alt="VaultBar Settings: two vaults, auto-lock options, launch at login and the Raycast scripts folder" width="420">
+<img src="docs/screenshots/settings.png" alt="VaultBar Settings: two vaults, auto-lock options, panic hotkey, launch at login and the Raycast scripts folder" width="420">
+&nbsp;
+<img src="docs/screenshots/newvault.png" alt="VaultBar New Vault window: name, folder, size, password and confirmation, with a reminder to save the password first" width="420">
 
 </div>
 
 ---
+
+## Why VaultBar
+
+- **Your password is never stored.** Not in the Keychain, not on disk, not in the clipboard. It goes to macOS's own disk-image tools through a pipe, and a person types it every time.
+- **It locks itself.** Sleep, screen lock or idle: the vault unmounts without you remembering to. A panic hotkey locks everything at once.
+- **One click, native, scriptable.** A menu bar icon, plus a `vaultbar` command line, `vaultbar://` links and Raycast scripts. Built on macOS's own AES-256 APFS images: no kernel extension, no FUSE, no network.
+
+### VaultBar vs Cryptomator and VeraCrypt
+
+A short, honest comparison. VaultBar is a small front end for macOS's built-in encrypted disk images, not a new encryption product.
+
+| | **VaultBar** | Cryptomator | VeraCrypt |
+|---|---|---|---|
+| Platforms | macOS only | macOS, Windows, Linux, iOS, Android | macOS, Windows, Linux |
+| How it encrypts | macOS's own AES-256 APFS images (`hdiutil` / `diskutil`) | Its own per-file encryption in a folder | Its own volumes (needs macFUSE on a Mac) |
+| Cloud sync | Warns about it; one big image is a poor fit for sync | Built for it (file by file) | Poor fit (one big container) |
+| Kernel extension or FUSE | None | FUSE-style mount (macFUSE or FUSE-T) | macFUSE |
+| Auto-lock | On sleep, screen lock and idle | Idle (and manual lock) | Auto-dismount options (logoff, screen saver, power saving, inactivity) |
+| Panic hotkey, URL scheme, built-in CLI | Yes | No (a separate CLI project exists) | CLI |
+| Cross-platform vault you can open anywhere | No, macOS only | Yes | Yes |
+| Hidden volumes, plausible deniability | No | No | Yes |
+| Independent security audits | No (it is a thin wrapper, but the code is small and open) | Yes | Yes |
+| Price | Free, MIT | Free for desktop, paid mobile apps | Free |
+
+**Choose Cryptomator** to sync encrypted files through a cloud service or to open the same vault on other systems.
+**Choose VeraCrypt** for hidden volumes or a container that works on every desktop OS.
+**Choose VaultBar** if you only use a Mac, want the vault one click away, and prefer macOS's own encryption with no extra drivers.
+Comparison from each project's public docs at the time of writing; check their sites for current details.
 
 ## Features
 
@@ -77,14 +114,16 @@ auto-lock is paused.
 
 ## Install
 
-> **Requires macOS 14 Sonoma or newer.**
+## Requirements
+
+macOS 14 Sonoma or later · Apple Silicon and Intel (universal binary)
 
 ```bash
 brew install --cask roypadina/tap/vaultbar
 ```
 
-**Not notarized.** VaultBar is ad hoc signed (no paid Apple Developer ID), so macOS may block the first launch. Either
-right-click it in `/Applications` → **Open** (then **Open Anyway** in System Settings → Privacy & Security),
+**Not notarized.** VaultBar is ad hoc signed (no paid Apple Developer ID), so macOS may block the first launch. Open
+**System Settings → Privacy & Security**, scroll down and click **Open Anyway** (right-click → Open no longer works on macOS 15+),
 or clear quarantine once:
 
 ```bash
@@ -255,7 +294,7 @@ ditto dist/VaultBar.app /Applications/VaultBar.app
 open /Applications/VaultBar.app
 ```
 
-`RELEASE=1 Scripts/package_app.sh` also writes `dist/VaultBar.zip`. `Scripts/make_icons.sh` regenerates the icons
+`RELEASE=1 Scripts/package_app.sh` also writes `dist/VaultBar.zip`. The package script builds a universal (arm64 + x86_64) app. `Scripts/make_icons.sh` regenerates the icons
 from `Assets/icons/*.svg` (needs `brew install librsvg`). An end-to-end test with a throwaway vault in `.scratch/`:
 `VAULTBAR_E2E=1 swift test --filter endToEnd`. `Scripts/e2e_launchd.sh` tests "always one copy running" against
 launchd (hand-off, an upgrade, a crash) with a separate headless test build. See [CONTRIBUTING.md](CONTRIBUTING.md).

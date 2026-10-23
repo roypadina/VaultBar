@@ -5,8 +5,9 @@ import VaultBarCore
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 
-// `VaultBar --render-settings out.png`: draws the Settings window with demo vaults, offscreen, for the README.
-if arguments.count == 2, arguments[0] == "--render-settings" {
+// `VaultBar --render-settings|--render-newvault|--render-history out.png`: draws that window with demo data, offscreen
+// (light appearance, 2x), for the README. Never touches real vaults or the real config.
+if arguments.count == 2, ["--render-settings", "--render-newvault"].contains(arguments[0]) {
     _ = NSApplication.shared
     let demo = try! JSONDecoder().decode(Config.self, from: Data("""
         {"defaultVault": "Personal", "launchAtLogin": true, "raycastScriptsDir": "~/Raycast",
@@ -15,12 +16,22 @@ if arguments.count == 2, arguments[0] == "--render-settings" {
                     {"name": "Work", "imagePath": "~/Vaults/Work.sparsebundle", "mountPoint": "~/Vaults/mnt/Work",
                      "hidden": true, "readOnly": true}]}
         """.utf8))
-    let view = NSHostingView(rootView: SettingsView(controller: AppController(preview: demo)))
+    let controller = AppController(preview: demo)
+    let content: AnyView
+    switch arguments[0] {
+    case "--render-newvault": content = AnyView(NewVaultView(controller: controller, close: {}))
+    default: content = AnyView(SettingsView(controller: controller))
+    }
+    let view = NSHostingView(rootView: content.environment(\.controlActiveState, .key))
     view.frame.size = view.fittingSize
     let window = NSWindow(contentRect: view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    window.appearance = NSAppearance(named: .aqua)
     window.contentView = view
     view.layoutSubtreeIfNeeded()
-    let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width) * 2,
+                               pixelsHigh: Int(view.bounds.height) * 2, bitsPerSample: 8, samplesPerPixel: 4,
+                               hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+    rep.size = view.bounds.size
     view.cacheDisplay(in: view.bounds, to: rep)
     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: arguments[1]))
     exit(0)
