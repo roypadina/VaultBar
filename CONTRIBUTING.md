@@ -60,7 +60,10 @@ scheme), installs its login agent and removes everything again at the end.
 
 [Conventional Commits](https://www.conventionalcommits.org): `feat: ...`, `fix: ...`, `docs: ...`.
 
-## Reporting bugs / requesting features
+## Feature requests and bugs
 
-Use the [issue templates](https://github.com/roypadina/VaultBar/issues/new/choose).
-Never paste a vault password into an issue.
+- **Feature requests:** [open one](https://github.com/roypadina/VaultBar/issues/new?template=feature_request.yml) and say what you're trying to do; that matters more than the exact feature. Search the [open requests](https://github.com/roypadina/VaultBar/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) first and 👍 an existing one if it's there.
+- **Bugs:** use the [bug report](https://github.com/roypadina/VaultBar/issues/new?template=bug_report.yml). Never paste a vault password into an issue.
+- **Ko-fi supporters:** add your Ko-fi name to the request and it goes to the front of my queue. It's a thank-you, not a purchase: no promise on what ships or when.
+- **Bigger changes:** open an issue before the PR so we agree on the shape first. Small, focused PRs can come straight in.
+- Replies are best effort, evenings and weekends. I read everything.
