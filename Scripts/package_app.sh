@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="${APP_NAME:-VaultBar}"
 BUNDLE_ID="${BUNDLE_ID:-com.padina.vaultbar}"
-VERSION="0.2.3"
-BUILD_NUMBER="${BUILD_NUMBER:-8}"
+VERSION="0.2.4"
+BUILD_NUMBER="${BUILD_NUMBER:-9}"
 BUILD_CONFIG="release"
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 # TEST_CONFIG_DIR (Scripts/e2e_launchd.sh only): a headless variant with its config there and no URL scheme, so it
