@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="${APP_NAME:-VaultBar}"
 BUNDLE_ID="${BUNDLE_ID:-com.padina.vaultbar}"
-VERSION="0.2.4"
-BUILD_NUMBER="${BUILD_NUMBER:-9}"
+VERSION="0.2.5"
+BUILD_NUMBER="${BUILD_NUMBER:-10}"
 BUILD_CONFIG="release"
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 # TEST_CONFIG_DIR (Scripts/e2e_launchd.sh only): a headless variant with its config there and no URL scheme, so it
@@ -15,9 +15,9 @@ APP_DIR="$DIST_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
-# CODE_SIGN_IDENTITY, else (dev builds) the first code-signing identity in the keychain, else ad hoc (e.g. CI).
-# A stable identity keeps the login item across rebuilds.
-SIGNING_IDENTITY="${CODE_SIGN_IDENTITY:-}"
+# VAULTBAR_SIGN_IDENTITY or CODE_SIGN_IDENTITY, else the first code-signing identity in the keychain, else ad hoc
+# (e.g. CI, contributors). A stable identity keeps macOS permissions across updates.
+SIGNING_IDENTITY="${VAULTBAR_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-}}"
 # RELEASE=1: also zip the app into dist/VaultBar.zip for GitHub Releases and the Homebrew cask.
 RELEASE="${RELEASE:-}"
 
@@ -107,11 +107,6 @@ PLIST
 chmod +x "$MACOS_DIR/$APP_NAME"
 # Drop the debug map (object-file paths from the build machine).
 strip -S -x "$MACOS_DIR/$APP_NAME"
-
-# Published zips are ad hoc signed unless CODE_SIGN_IDENTITY is set, so no local certificate name ships.
-if [[ -n "$RELEASE" && -z "$SIGNING_IDENTITY" ]]; then
-    SIGNING_IDENTITY="-"
-fi
 
 if [[ -z "$SIGNING_IDENTITY" ]]; then
     SIGNING_IDENTITY="$(
