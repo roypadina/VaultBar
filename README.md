@@ -68,7 +68,11 @@ Comparison from each project's public docs at the time of writing; check their s
 
 - **One click** — left-click the menu bar icon to lock or unlock your default vault. Right-click (or Control-click)
   for every vault (Unlock… / Lock, **Open in Finder** or **Unlock & Open…**), Lock All, New Vault…, Add Existing
-  Vault…, Settings….
+  Vault…, Settings…. Hover the icon for its state and what a click does.
+- **Welcome window** on first launch (once, also after an update): where the icon lives, that the password is never
+  stored, a **Launch at login** switch and a first step. Reopen it from **Settings → Welcome Guide…**.
+- **Icon hidden by a full menu bar?** Open VaultBar again from Applications or Raycast: it opens Settings. While a
+  window is open, VaultBar shows a Dock icon and a real menu bar (About, Settings…, Hide, Quit, Edit, Window).
 - **Open in Finder after unlocking** (optional setting), or per vault with Open / `vaultbar://open`.
 - **Read-only unlock**: per vault by default, or once with ⌥ in the menu ("Unlock Read-Only…"), `?readonly=1` or
   `vaultbar unlock --readonly`. The password prompt shows the mode ("Work — Read-Only" with a blue icon, "Work — Read & Write"
@@ -85,7 +89,8 @@ Comparison from each project's public docs at the time of writing; check their s
   ones unless you turn that off. ⌥-click the icon to lock all without forcing; `vaultbar://lockall`.
 - **Notifications** when idle or screen-lock auto-lock locks a vault (sleep locks are silent), before idle auto-lock
   force-locks a busy one (with **Keep unlocked 15 min**), and when a lock fails (sleep included). The wording never names a vault: notifications can show on the lock screen.
-- **History**: the menu shows the last event ("Last: Locked Work (idle 15 min), 10:42"); **History…** lists the last
+  macOS asks for the notification permission after your first unlock, not at launch.
+- **History**: the menu shows the last event ("Last: Locked Work (idle 15 min), 10:42"); **History** lists the last
   50. Kept in memory only.
 - **Change password…** (Settings, per vault, while it's locked), with a check that the new password opens the image.
 - **Unlock prompt hints**: Caps Lock and the current keyboard layout, the usual causes of a "wrong" password.
@@ -95,7 +100,7 @@ Comparison from each project's public docs at the time of writing; check their s
   - on **sleep**: forced, immediately;
   - on **screen lock**: clean unmount; if a file is still open, forced after 30 s, but only if the screen is still locked;
   - after **N idle minutes**: clean unmount; if busy, forced after 60 s, but only if you're still away.
-- **Pause auto-lock for 1 hour** — for long unattended jobs that work inside a vault (idle only counts keyboard and
+- **Pause Auto-Lock for 1 Hour** — for long unattended jobs that work inside a vault (idle only counts keyboard and
   mouse). Sleep still locks. The icon gets a warning badge; the pause ends after an hour, on Resume, or on quit.
 - **New Vault…** creates an encrypted AES-256 APFS sparse bundle, warns about weak passwords and about folders that
   sync to a cloud (iCloud Drive, Desktop & Documents, `~/Library/CloudStorage`, Syncthing, Synology Drive).
@@ -105,7 +110,7 @@ Comparison from each project's public docs at the time of writing; check their s
   so macOS starts VaultBar at login and restarts it if it ever crashes (not after you choose Quit). Exactly one copy
   runs, and (from 0.2.1 on) never zero: when one copy hands over to another (a copy you started yourself handing
   over to the supervised one once it's idle, or an upgrade), the old copy quits only after the new one has confirmed
-  it is running. No Dock icon.
+  it is running. No Dock icon, except while one of its windows is open.
 - **Quit asks first** while a vault is unlocked, since auto-lock stops while VaultBar is closed:
   **Lock All & Quit**, **Quit** or **Cancel**.
 
@@ -123,7 +128,7 @@ macOS 14 Sonoma or later · Apple Silicon and Intel (universal binary)
 brew install --cask roypadina/tap/vaultbar
 ```
 
-**Not notarized.** VaultBar is ad hoc signed (no paid Apple Developer ID), so macOS may block the first launch. Open
+**Not notarized.** VaultBar is signed with a self-made certificate (no paid Apple Developer ID), so macOS may block the first launch. Open
 **System Settings → Privacy & Security**, scroll down and click **Open Anyway** (right-click → Open no longer works on macOS 15+),
 or clear quarantine once:
 

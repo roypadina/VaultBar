@@ -19,6 +19,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private var mounted: [String: Mount] = [:]
     /// Lock / unlock events for the menu's "Last:" line and the History window. Memory only.
     @Published private(set) var history = EventLog()
+    /// Why the login agent couldn't be installed (nil: fine); shown under the Settings toggle.
+    @Published private(set) var loginAgentProblem: String?
     private var statusItem: NSStatusItem?
     private var prompting = false
     private var pendingForce = Set<String>()
@@ -70,7 +72,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        installEditMenu()
+        installMainMenu()
         if !Instance.isHeadless {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
             item.button?.target = self
@@ -128,6 +130,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         setUpNotifications()
         applyPanicHotkey()
         syncScripts() // idempotent; brings scripts added in an update without pressing Regenerate
+        showWelcomeOnce()
     }
 
     // MARK: Succession (always one copy running)
@@ -212,7 +215,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
     private var activity: Activity {
         Activity(prompting: prompting, inFlight: inFlight, pendingForce: pendingForce.count, paused: pause.isActive(),
-                 uiOpen: NSApp.modalWindow != nil || statusItem?.menu != nil || windows.values.contains(where: \.isVisible))
+                 uiOpen: NSApp.modalWindow != nil || statusItem?.menu != nil || !windows.isEmpty)
     }
 
     /// A tool run off the main thread that, unlike `background`, doesn't count as work in progress.
@@ -270,6 +273,12 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
+    /// Opening VaultBar again from Finder or Raycast gets Settings: a hidden or crowded-out icon is no dead end.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { showSettings() }
+        return false
+    }
+
     // MARK: State
 
     func refresh() {
@@ -283,7 +292,9 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
                        accessibilityDescription: nil)
         image?.accessibilityDescription = "VaultBar: \(state)"
         statusItem?.button?.image = image
-        statusItem?.button?.toolTip = paused ? pauseTitle : nil
+        statusItem?.button?.toolTip = "VaultBar: \(state)" + (config.vault(named: nil).map {
+            ". Click to unlock or lock \($0.name). Right-click for the menu."
+        } ?? ". Click for the menu.")
     }
 
     private func mountPoint(_ vault: Vault) -> String? { mounted.mountPoint(of: vault) }
@@ -335,6 +346,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private func showMenu() {
         refresh()
         let menu = NSMenu()
+        menu.autoenablesItems = false // Lock All is enabled by hand
         for vault in config.vaults {
             let mount = mounted.mount(of: vault)
             let state = mount.map { $0.readOnly ? "Unlocked (read-only)" : "Unlocked" } ?? "Locked"
@@ -361,15 +373,19 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             menu.addItem(empty)
         }
         menu.addItem(.separator())
-        menu.addItem(menuItem("Lock All", #selector(lockAll)))
-        menu.addItem(menuItem(pause.isActive() ? pauseTitle : "Pause auto-lock for 1 hour", #selector(togglePause)))
+        if !config.vaults.isEmpty {
+            let lockAllItem = menuItem("Lock All", #selector(lockAll))
+            lockAllItem.isEnabled = config.vaults.contains { mountPoint($0) != nil }
+            menu.addItem(lockAllItem)
+            menu.addItem(menuItem(pause.isActive() ? pauseTitle : "Pause Auto-Lock for 1 Hour", #selector(togglePause)))
+        }
         if let last = history.last {
             let item = NSMenuItem(title: "Last: \(last.text), \(last.date.formatted(date: .omitted, time: .shortened))",
                                   action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
         }
-        menu.addItem(menuItem("History…", #selector(showHistory)))
+        menu.addItem(menuItem("History", #selector(showHistory)))
         menu.addItem(.separator())
         menu.addItem(menuItem("New Vault…", #selector(newVault)))
         menu.addItem(menuItem("Add Existing Vault…", #selector(addExisting)))
@@ -503,6 +519,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             if result.ok {
                 log.notice("unlocked \(vault.name, privacy: .public)\(readOnly ? " read-only" : "", privacy: .public)")
                 record("Unlocked \(vault.name)\(readOnly ? " (read-only)" : "")")
+                requestNotificationPermission()
                 if thenOpen { openInFinder(vault) }
                 return
             }
@@ -633,7 +650,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private var pauseTitle: String {
-        "Auto-lock paused until \(pause.until?.formatted(date: .omitted, time: .shortened) ?? "") — Resume"
+        "Resume Auto-Lock (Paused Until \(pause.until?.formatted(date: .omitted, time: .shortened) ?? ""))"
     }
 
     @objc private func togglePause() {
@@ -734,6 +751,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             }.value
             await LoginAgent.removeSMAppServiceAgent()
             loginAgentLoaded = await Task.detached { LoginAgent.isLoaded }.value
+            loginAgentProblem = problem
             if let problem {
                 log.error("login agent: \(problem, privacy: .public)")
             } else {
@@ -831,8 +849,23 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
     // MARK: Windows
 
-    @objc private func showAbout() {
+    @objc func showAbout() {
         showWindow("about", "About VaultBar", AboutView())
+    }
+
+    func showWelcome() {
+        showWindow("welcome", "Welcome", WelcomeView(
+            controller: self,
+            onOpenSettings: { [weak self] in self?.showSettings(); self?.windows["welcome"]?.close() }, // Settings first: no Dock blink
+            onDone: { [weak self] in self?.windows["welcome"]?.close() }))
+    }
+
+    /// First launch (also the first one after updating from a version without it): shown once, never in the headless
+    /// test variant. Goes through `showWindow` so `activity.uiOpen` holds the hand-off to the login-agent copy.
+    private func showWelcomeOnce() {
+        guard !Instance.isHeadless, !UserDefaults.standard.bool(forKey: "didShowWelcome") else { return }
+        UserDefaults.standard.set(true, forKey: "didShowWelcome")
+        showWelcome()
     }
 
     @objc private func openKoFi() {
@@ -840,7 +873,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     @objc private func showHistory() {
-        showWindow("history", "VaultBar History", HistoryView(controller: self))
+        showWindow("history", "History", HistoryView(controller: self))
     }
 
     func showChangePassword(_ vault: Vault) {
@@ -906,9 +939,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func showWindow(_ id: String, _ title: String, _ view: some View) {
-        NSApp.activate()
-        if let window = windows[id], window.isVisible {
-            window.makeKeyAndOrderFront(nil)
+        if let window = windows[id] { // membership, not isVisible: ⌘H hides open windows
+            AccessoryWindows.shared.show(window)
             return
         }
         let window = NSWindow(contentViewController: NSHostingController(rootView: view))
@@ -917,23 +949,39 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         window.isReleasedWhenClosed = false
         window.center()
         windows[id] = window
-        window.makeKeyAndOrderFront(nil)
+        // Release the window on close, so a closed one doesn't keep its view alive.
+        Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: NSWindow.willCloseNotification, object: window) { break }
+            if self?.windows[id] === window { self?.windows[id] = nil }
+        }
+        AccessoryWindows.shared.show(window)
     }
 
-    /// An accessory app has no menu bar, but key equivalents still route through mainMenu: this makes ⌘V etc. work.
-    private func installEditMenu() {
+    /// The main menu shows while a window is open (see `AccessoryWindows`); it also routes ⌘V etc. to text fields.
+    private func installMainMenu() {
+        let app = NSMenu(title: "VaultBar")
+        app.addItem(menuItem("About VaultBar", #selector(showAbout)))
+        app.addItem(.separator())
+        app.addItem(menuItem("Settings…", #selector(showSettings), key: ","))
+        app.addItem(.separator())
+        app.addItem(menuItem("Hide VaultBar", #selector(NSApplication.hide(_:)), key: "h", target: NSApp))
+        app.addItem(menuItem("Quit VaultBar", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp))
         let edit = NSMenu(title: "Edit")
         edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-        edit.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-        let editItem = NSMenuItem()
-        editItem.submenu = edit
+        let window = NSMenu(title: "Window")
+        window.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        window.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         let main = NSMenu()
-        main.addItem(NSMenuItem()) // app menu slot
-        main.addItem(editItem)
+        for submenu in [app, edit, window] {
+            let item = NSMenuItem()
+            item.submenu = submenu
+            main.addItem(item)
+        }
         NSApp.mainMenu = main
+        NSApp.windowsMenu = window
     }
 
     // MARK: Alerts
