@@ -9,6 +9,9 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Vaults") {
+                if controller.config.vaults.isEmpty {
+                    Text("No vaults yet. Add an existing encrypted disk image, or create a new one.").foregroundStyle(.secondary)
+                }
                 ForEach(controller.config.vaults, id: \.name) { vault in
                     VaultRow(controller: controller, vault: vault)
                 }
@@ -17,35 +20,45 @@ struct SettingsView: View {
                     Button("New Vault…") { controller.newVault() }
                 }
             }
-            Section("Auto-lock (all vaults)") {
+            Section {
                 Toggle("Lock on sleep (forced)", isOn: controller.binding(\.autoLock.onSleep))
                 Toggle("Lock when the screen locks", isOn: controller.binding(\.autoLock.onScreenLock))
-                HStack {
-                    Text("Lock after idle minutes (0 = off)")
-                    Spacer()
-                    TextField("", value: controller.binding(\.autoLock.idleMinutes), format: .number)
-                        .frame(width: 50)
-                        .accessibilityLabel("Idle minutes before locking, 0 for off")
-                    Stepper("", value: controller.binding(\.autoLock.idleMinutes), in: 0...600).labelsHidden()
-                        .accessibilityLabel("Idle minutes")
+                LabeledContent("Lock after idle") {
+                    HStack {
+                        TextField("", value: controller.binding(\.autoLock.idleMinutes), format: .number)
+                            .frame(width: 50)
+                            .accessibilityLabel("Idle minutes before locking, 0 for off")
+                        Stepper("", value: controller.binding(\.autoLock.idleMinutes), in: 0...600).labelsHidden()
+                            .accessibilityLabel("Idle minutes")
+                        Text("minutes")
+                    }
                 }
+            } header: {
+                Text("Auto-lock (all vaults)")
+            } footer: {
+                Text("0 turns idle locking off.")
             }
-            Section("Panic lock") {
+            Section {
                 Picker("Hotkey that locks every vault", selection: controller.binding(\.panicHotkey)) {
                     ForEach(PanicHotkey.presets, id: \.id) { Text($0.title).tag($0.id) }
                     Text("Off").tag("off")
                 }
-                Toggle("Force busy vaults (unsaved changes in open apps may be lost)", isOn: controller.binding(\.panicForces))
-                Text("⌥-click the menu bar icon to lock all without forcing.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Force busy vaults", isOn: controller.binding(\.panicForces))
+            } header: {
+                Text("Panic lock")
+            } footer: {
+                Text("Forcing a busy vault can lose unsaved changes in open apps. ⌥-click the menu bar icon to lock all without forcing.")
             }
             Section {
-                Toggle("Launch at login (auto-lock needs VaultBar running)", isOn: controller.binding(\.launchAtLogin))
+                Toggle("Launch at login", isOn: controller.binding(\.launchAtLogin))
                 if let problem = controller.loginAgentProblem {
                     ProblemLabel("Launch at login isn't set up, so auto-lock stops after a restart. \(problem)")
                 }
                 Toggle("Open in Finder after unlocking", isOn: controller.binding(\.openAfterUnlock))
+            } footer: {
+                Text("Auto-lock only works while VaultBar is running.")
             }
-            Section("Raycast Script Commands (Unlock / Lock / Open per vault)") {
+            Section {
                 LabeledContent("Folder") {
                     HStack {
                         Text(controller.config.raycastScriptsDir ?? "Off").foregroundStyle(.secondary)
@@ -60,6 +73,10 @@ struct SettingsView: View {
                 }
                 Button("Regenerate Raycast scripts") { controller.syncScripts(announce: true) }
                     .disabled(controller.config.raycastScriptsDir == nil)
+            } header: {
+                Text("Raycast Script Commands")
+            } footer: {
+                Text("One Unlock, one Lock and one Open script for each vault.")
             }
             Section {
                 LabeledContent("VaultBar \(version)") {
@@ -71,8 +88,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520)
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(width: 520, height: 680) // the grouped form scrolls instead of growing with every vault
     }
 }
 
@@ -122,7 +138,12 @@ private struct VaultRow: View {
                 HStack {
                     TextField("Name", text: $name).onSubmit(rename)
                     if name != vault.name { Button("Rename", action: rename) }
-                    Button("Remove") { controller.remove(vault) }
+                    Button("Remove") {
+                        if controller.confirm("Remove \(vault.name) from VaultBar?",
+                                              "The image file stays. Its VaultBar settings are removed.", "Remove") {
+                            controller.remove(vault)
+                        }
+                    }
                         .help("Removes it from VaultBar only. The image file stays.")
                         .accessibilityLabel("Remove \(vault.name) from VaultBar (the image file stays)")
                 }
