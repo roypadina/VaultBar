@@ -18,7 +18,12 @@ extension AppController: UNUserNotificationCenterDelegate {
         center.setNotificationCategories([
             UNNotificationCategory(identifier: forceSoonCategory, actions: [keep], intentIdentifiers: []),
         ])
-        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    /// After a successful unlock, when lock notifications start to matter; a no-op once the user has decided.
+    func requestNotificationPermission() {
+        guard canNotify else { return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
     func notify(_ body: String, keepUnlockedAction offerKeep: Bool = false) {

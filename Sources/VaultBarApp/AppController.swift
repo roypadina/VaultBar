@@ -19,6 +19,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private var mounted: [String: Mount] = [:]
     /// Lock / unlock events for the menu's "Last:" line and the History window. Memory only.
     @Published private(set) var history = EventLog()
+    /// Why the login agent couldn't be installed (nil: fine); shown under the Settings toggle.
+    @Published private(set) var loginAgentProblem: String?
     private var statusItem: NSStatusItem?
     private var prompting = false
     private var pendingForce = Set<String>()
@@ -128,6 +130,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         setUpNotifications()
         applyPanicHotkey()
         syncScripts() // idempotent; brings scripts added in an update without pressing Regenerate
+        showWelcomeOnce()
     }
 
     // MARK: Succession (always one copy running)
@@ -509,6 +512,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             if result.ok {
                 log.notice("unlocked \(vault.name, privacy: .public)\(readOnly ? " read-only" : "", privacy: .public)")
                 record("Unlocked \(vault.name)\(readOnly ? " (read-only)" : "")")
+                requestNotificationPermission()
                 if thenOpen { openInFinder(vault) }
                 return
             }
@@ -740,6 +744,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             }.value
             await LoginAgent.removeSMAppServiceAgent()
             loginAgentLoaded = await Task.detached { LoginAgent.isLoaded }.value
+            loginAgentProblem = problem
             if let problem {
                 log.error("login agent: \(problem, privacy: .public)")
             } else {
@@ -837,8 +842,23 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
     // MARK: Windows
 
-    @objc private func showAbout() {
+    @objc func showAbout() {
         showWindow("about", "About VaultBar", AboutView())
+    }
+
+    func showWelcome() {
+        showWindow("welcome", "Welcome", WelcomeView(
+            controller: self,
+            onOpenSettings: { [weak self] in self?.windows["welcome"]?.close(); self?.showSettings() },
+            onDone: { [weak self] in self?.windows["welcome"]?.close() }))
+    }
+
+    /// First launch (also the first one after updating from a version without it): shown once, never in the headless
+    /// test variant. Goes through `showWindow` so `activity.uiOpen` holds the hand-off to the login-agent copy.
+    private func showWelcomeOnce() {
+        guard !Instance.isHeadless, !UserDefaults.standard.bool(forKey: "didShowWelcome") else { return }
+        UserDefaults.standard.set(true, forKey: "didShowWelcome")
+        showWelcome()
     }
 
     @objc private func openKoFi() {

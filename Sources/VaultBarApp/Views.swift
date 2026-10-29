@@ -4,6 +4,7 @@ import VaultBarCore
 
 struct SettingsView: View {
     @ObservedObject var controller: AppController
+    private let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
 
     var body: some View {
         Form {
@@ -39,6 +40,9 @@ struct SettingsView: View {
             }
             Section {
                 Toggle("Launch at login (auto-lock needs VaultBar running)", isOn: controller.binding(\.launchAtLogin))
+                if let problem = controller.loginAgentProblem {
+                    ProblemLabel("Launch at login isn't set up, so auto-lock stops after a restart. \(problem)")
+                }
                 Toggle("Open in Finder after unlocking", isOn: controller.binding(\.openAfterUnlock))
             }
             Section("Raycast Script Commands (Unlock / Lock / Open per vault)") {
@@ -57,10 +61,38 @@ struct SettingsView: View {
                 Button("Regenerate Raycast scripts") { controller.syncScripts(announce: true) }
                     .disabled(controller.config.raycastScriptsDir == nil)
             }
+            Section {
+                LabeledContent("VaultBar \(version)") {
+                    HStack {
+                        Button("Welcome Guide…") { controller.showWelcome() }
+                        Button("About…") { controller.showAbout() }
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .frame(width: 520)
         .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// A warning or an error (CLR-5): the text stays primary, only the icon carries the colour.
+struct ProblemLabel: View {
+    let text: String
+    var isError = false
+
+    init(_ text: String, isError: Bool = false) {
+        self.text = text
+        self.isError = isError
+    }
+
+    var body: some View {
+        Label {
+            Text(text).fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: isError ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(isError ? .red : .orange)
+        }
     }
 }
 
