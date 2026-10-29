@@ -70,7 +70,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        installEditMenu()
+        installMainMenu()
         if !Instance.isHeadless {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
             item.button?.target = self
@@ -268,6 +268,12 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         for url in urls {
             Task { self.handle(url) }
         }
+    }
+
+    /// Opening VaultBar again from Finder or Raycast gets Settings: a hidden or crowded-out icon is no dead end.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { showSettings() }
+        return false
     }
 
     // MARK: State
@@ -906,9 +912,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func showWindow(_ id: String, _ title: String, _ view: some View) {
-        NSApp.activate()
         if let window = windows[id], window.isVisible {
-            window.makeKeyAndOrderFront(nil)
+            AccessoryWindows.shared.show(window)
             return
         }
         let window = NSWindow(contentViewController: NSHostingController(rootView: view))
@@ -917,23 +922,39 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         window.isReleasedWhenClosed = false
         window.center()
         windows[id] = window
-        window.makeKeyAndOrderFront(nil)
+        // Release the window on close, so a closed one doesn't keep its view alive.
+        Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: NSWindow.willCloseNotification, object: window) { break }
+            if self?.windows[id] === window { self?.windows[id] = nil }
+        }
+        AccessoryWindows.shared.show(window)
     }
 
-    /// An accessory app has no menu bar, but key equivalents still route through mainMenu: this makes ⌘V etc. work.
-    private func installEditMenu() {
+    /// The main menu shows while a window is open (see `AccessoryWindows`); it also routes ⌘V etc. to text fields.
+    private func installMainMenu() {
+        let app = NSMenu(title: "VaultBar")
+        app.addItem(menuItem("About VaultBar", #selector(showAbout)))
+        app.addItem(.separator())
+        app.addItem(menuItem("Settings…", #selector(showSettings), key: ","))
+        app.addItem(.separator())
+        app.addItem(menuItem("Hide VaultBar", #selector(NSApplication.hide(_:)), key: "h", target: NSApp))
+        app.addItem(menuItem("Quit VaultBar", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp))
         let edit = NSMenu(title: "Edit")
         edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-        edit.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-        let editItem = NSMenuItem()
-        editItem.submenu = edit
+        let window = NSMenu(title: "Window")
+        window.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        window.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         let main = NSMenu()
-        main.addItem(NSMenuItem()) // app menu slot
-        main.addItem(editItem)
+        for submenu in [app, edit, window] {
+            let item = NSMenuItem()
+            item.submenu = submenu
+            main.addItem(item)
+        }
         NSApp.mainMenu = main
+        NSApp.windowsMenu = window
     }
 
     // MARK: Alerts

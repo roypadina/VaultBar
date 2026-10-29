@@ -105,7 +105,7 @@ Comparison from each project's public docs at the time of writing; check their s
   so macOS starts VaultBar at login and restarts it if it ever crashes (not after you choose Quit). Exactly one copy
   runs, and (from 0.2.1 on) never zero: when one copy hands over to another (a copy you started yourself handing
   over to the supervised one once it's idle, or an upgrade), the old copy quits only after the new one has confirmed
-  it is running. No Dock icon.
+  it is running. No Dock icon, except while one of its windows is open.
 - **Quit asks first** while a vault is unlocked, since auto-lock stops while VaultBar is closed:
   **Lock All & Quit**, **Quit** or **Cancel**.
 
