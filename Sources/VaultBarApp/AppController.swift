@@ -856,7 +856,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     func showWelcome() {
         showWindow("welcome", "Welcome", WelcomeView(
             controller: self,
-            onOpenSettings: { [weak self] in self?.windows["welcome"]?.close(); self?.showSettings() },
+            onOpenSettings: { [weak self] in self?.showSettings(); self?.windows["welcome"]?.close() }, // Settings first: no Dock blink
             onDone: { [weak self] in self?.windows["welcome"]?.close() }))
     }
 
