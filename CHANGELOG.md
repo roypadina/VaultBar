@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-30
+
 ### Added
 - Welcome window on first launch (once, also after updating): where the icon lives, that your password is never stored, a launch-at-login switch and the first step. Reopen it from Settings > Welcome Guide….
 - Opening VaultBar again from Applications or Raycast now opens Settings, so a hidden menu bar icon is no dead end.
