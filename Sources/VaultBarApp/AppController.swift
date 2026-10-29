@@ -292,7 +292,9 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
                        accessibilityDescription: nil)
         image?.accessibilityDescription = "VaultBar: \(state)"
         statusItem?.button?.image = image
-        statusItem?.button?.toolTip = paused ? pauseTitle : nil
+        statusItem?.button?.toolTip = "VaultBar: \(state)" + (config.vault(named: nil).map {
+            ". Click to unlock or lock \($0.name). Right-click for the menu."
+        } ?? ". Click for the menu.")
     }
 
     private func mountPoint(_ vault: Vault) -> String? { mounted.mountPoint(of: vault) }
@@ -344,6 +346,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private func showMenu() {
         refresh()
         let menu = NSMenu()
+        menu.autoenablesItems = false // Lock All is enabled by hand
         for vault in config.vaults {
             let mount = mounted.mount(of: vault)
             let state = mount.map { $0.readOnly ? "Unlocked (read-only)" : "Unlocked" } ?? "Locked"
@@ -370,15 +373,19 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             menu.addItem(empty)
         }
         menu.addItem(.separator())
-        menu.addItem(menuItem("Lock All", #selector(lockAll)))
-        menu.addItem(menuItem(pause.isActive() ? pauseTitle : "Pause auto-lock for 1 hour", #selector(togglePause)))
+        if !config.vaults.isEmpty {
+            let lockAllItem = menuItem("Lock All", #selector(lockAll))
+            lockAllItem.isEnabled = config.vaults.contains { mountPoint($0) != nil }
+            menu.addItem(lockAllItem)
+            menu.addItem(menuItem(pause.isActive() ? pauseTitle : "Pause Auto-Lock for 1 Hour", #selector(togglePause)))
+        }
         if let last = history.last {
             let item = NSMenuItem(title: "Last: \(last.text), \(last.date.formatted(date: .omitted, time: .shortened))",
                                   action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
         }
-        menu.addItem(menuItem("History…", #selector(showHistory)))
+        menu.addItem(menuItem("History", #selector(showHistory)))
         menu.addItem(.separator())
         menu.addItem(menuItem("New Vault…", #selector(newVault)))
         menu.addItem(menuItem("Add Existing Vault…", #selector(addExisting)))
@@ -643,7 +650,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private var pauseTitle: String {
-        "Auto-lock paused until \(pause.until?.formatted(date: .omitted, time: .shortened) ?? "") — Resume"
+        "Resume Auto-Lock (Paused Until \(pause.until?.formatted(date: .omitted, time: .shortened) ?? ""))"
     }
 
     @objc private func togglePause() {
@@ -866,7 +873,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     @objc private func showHistory() {
-        showWindow("history", "VaultBar History", HistoryView(controller: self))
+        showWindow("history", "History", HistoryView(controller: self))
     }
 
     func showChangePassword(_ vault: Vault) {

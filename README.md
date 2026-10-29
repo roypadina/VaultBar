@@ -85,7 +85,7 @@ Comparison from each project's public docs at the time of writing; check their s
   ones unless you turn that off. ⌥-click the icon to lock all without forcing; `vaultbar://lockall`.
 - **Notifications** when idle or screen-lock auto-lock locks a vault (sleep locks are silent), before idle auto-lock
   force-locks a busy one (with **Keep unlocked 15 min**), and when a lock fails (sleep included). The wording never names a vault: notifications can show on the lock screen.
-- **History**: the menu shows the last event ("Last: Locked Work (idle 15 min), 10:42"); **History…** lists the last
+- **History**: the menu shows the last event ("Last: Locked Work (idle 15 min), 10:42"); **History** lists the last
   50. Kept in memory only.
 - **Change password…** (Settings, per vault, while it's locked), with a check that the new password opens the image.
 - **Unlock prompt hints**: Caps Lock and the current keyboard layout, the usual causes of a "wrong" password.
@@ -95,7 +95,7 @@ Comparison from each project's public docs at the time of writing; check their s
   - on **sleep**: forced, immediately;
   - on **screen lock**: clean unmount; if a file is still open, forced after 30 s, but only if the screen is still locked;
   - after **N idle minutes**: clean unmount; if busy, forced after 60 s, but only if you're still away.
-- **Pause auto-lock for 1 hour** — for long unattended jobs that work inside a vault (idle only counts keyboard and
+- **Pause Auto-Lock for 1 Hour** — for long unattended jobs that work inside a vault (idle only counts keyboard and
   mouse). Sleep still locks. The icon gets a warning badge; the pause ends after an hour, on Resume, or on quit.
 - **New Vault…** creates an encrypted AES-256 APFS sparse bundle, warns about weak passwords and about folders that
   sync to a cloud (iCloud Drive, Desktop & Documents, `~/Library/CloudStorage`, Syncthing, Synology Drive).
