@@ -65,7 +65,9 @@ final class PasswordPanel: NSPanel {
             parts.append("Keyboard: \(Unmanaged<CFString>.fromOpaque(name).takeUnretainedValue() as String)")
         }
         hint.stringValue = parts.joined(separator: " · ")
-        hint.textColor = parts.first == "Caps Lock is on" ? .systemOrange : .secondaryLabelColor
+        let capsLock = parts.first == "Caps Lock is on" // primary colour and semibold: orange text fails contrast
+        hint.textColor = capsLock ? .labelColor : .secondaryLabelColor
+        hint.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: capsLock ? .semibold : .regular)
     }
 
     /// Fills the panel without showing it.

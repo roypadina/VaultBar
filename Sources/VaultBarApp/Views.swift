@@ -219,30 +219,32 @@ struct NewVaultView: View {
 
     var body: some View {
         Form {
-            Text("Save this password in your password manager first. There is no recovery key.")
+            ProblemLabel("Save this password in your password manager first. There is no recovery key.")
                 .font(.headline)
-                .foregroundStyle(.orange)
             TextField("Name", text: $name)
             TextField("Volume name", text: $volumeName, prompt: Text(name.isEmpty ? "Same as name" : name))
             LabeledContent("Folder") {
                 HStack {
                     Text(folder?.path ?? "None").lineLimit(1).truncationMode(.middle)
                     Button("Choose…", action: chooseFolder)
+                        .accessibilityLabel("Choose a folder for the new vault")
                 }
             }
             if let folder, let warning = SyncFolder.warning(for: folder) {
-                Text("⚠️ \(warning) You'll be asked to confirm.").foregroundStyle(.orange)
+                ProblemLabel("\(warning) You'll be asked to confirm.")
             }
             TextField("Max size in GB (sparse, grows as needed)", value: $sizeGB, format: .number)
             SecureField("Password", text: $password)
             SecureField("Confirm password", text: $confirm)
             if !password.isEmpty {
                 ForEach(PasswordAdvice.warnings(for: password, names: [name, volume]), id: \.self) {
-                    Text($0).foregroundStyle(.orange)
+                    ProblemLabel($0)
                 }
             }
-            if let message = error ?? problem {
-                Text(message).foregroundStyle(error == nil ? Color.secondary : Color.red)
+            if let error {
+                ProblemLabel(error, isError: true)
+            } else if let problem {
+                Text(problem).foregroundStyle(.secondary)
             }
             HStack {
                 Spacer()
@@ -307,6 +309,7 @@ struct AboutView: View {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .frame(width: 96, height: 96)
+                .accessibilityHidden(true)
 
             VStack(spacing: 2) {
                 Text("VaultBar").font(.title.bold())
@@ -317,7 +320,8 @@ struct AboutView: View {
 
             VStack(spacing: 8) {
                 Text("Made by Roy Padina").font(.headline)
-                Text("I'm a software engineer from Israel who builds small, focused Mac tools to fix the little annoyances in my own day — then shares them free and open source. If this app saves you time, a coffee on Ko-fi keeps the next one coming. ☕")
+                Text("I'm a software engineer from Israel who builds small, focused Mac tools to fix the little annoyances in my own day — then shares them free and open source.")
+                Text("If this app saves you time, a coffee on Ko-fi keeps the next one coming. ☕")
             }
             .multilineTextAlignment(.center)
             .fixedSize(horizontal: false, vertical: true)
@@ -421,16 +425,18 @@ struct ChangePasswordView: View {
 
     var body: some View {
         Form {
-            Text("Save the new password in your password manager first. There is no recovery key.")
-                .font(.headline).foregroundStyle(.orange)
+            ProblemLabel("Save the new password in your password manager first. There is no recovery key.")
+                .font(.headline)
             Text("This changes the password that opens \(vault.name). It doesn't re-encrypt the data: copies of the image made earlier (backups, snapshots) still open with the old password. For a full re-key, create a new vault and copy the files over.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             SecureField("Current password", text: $current)
             SecureField("New password", text: $new)
             SecureField("Confirm new password", text: $confirm)
-            ForEach(warnings, id: \.self) { Text($0).foregroundStyle(.orange) }
-            if let message = error ?? problem {
-                Text(message).foregroundStyle(error == nil ? Color.secondary : Color.red).fixedSize(horizontal: false, vertical: true)
+            ForEach(warnings, id: \.self) { ProblemLabel($0) }
+            if let error {
+                ProblemLabel(error, isError: true)
+            } else if let problem {
+                Text(problem).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             HStack {
                 Spacer()
