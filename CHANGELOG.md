@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Welcome window on first launch (once, also after updating): where the icon lives, that your password is never stored, a launch-at-login switch and the first step. Reopen it from Settings > Welcome Guide….
+- Opening VaultBar again from Applications or Raycast now opens Settings, so a hidden menu bar icon is no dead end.
+- Dock icon, Cmd-Tab entry and a real menu bar (About, Settings…, Hide, Quit, Edit, Window) while one of its windows is open.
+- Settings: "VaultBar <version>" row with Welcome Guide… and About… buttons, an empty-state sentence when there are no vaults, and a warning when launch at login couldn't be set up.
+
+### Changed
+- The menu bar icon's tooltip shows the state and what a click does.
+- The menu: Lock All is disabled while nothing is unlocked, and Lock All and Pause Auto-Lock are hidden until you have a vault. Commands are in title case ("Pause Auto-Lock for 1 Hour", "Resume Auto-Lock (Paused Until …)", "History").
+- Settings keeps a fixed height and scrolls, instead of growing with every vault. Help text moved from labels into footers.
+- Warnings and errors (including "there is no recovery key") are now primary-colour text with a coloured icon, easier to read.
+- The notification permission prompt appears after your first unlock, not at launch.
+- Remove asks for confirmation before dropping a vault's settings.
+
+### Fixed
+- VoiceOver: the About icon is hidden, the bio and the Ko-fi line are separate, and the New Vault folder button has a label.
+
 ## [0.2.5] - 2026-10-25
 
 ### Changed
