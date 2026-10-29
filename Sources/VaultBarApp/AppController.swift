@@ -215,7 +215,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
     private var activity: Activity {
         Activity(prompting: prompting, inFlight: inFlight, pendingForce: pendingForce.count, paused: pause.isActive(),
-                 uiOpen: NSApp.modalWindow != nil || statusItem?.menu != nil || windows.values.contains(where: \.isVisible))
+                 uiOpen: NSApp.modalWindow != nil || statusItem?.menu != nil || !windows.isEmpty)
     }
 
     /// A tool run off the main thread that, unlike `background`, doesn't count as work in progress.
@@ -939,7 +939,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func showWindow(_ id: String, _ title: String, _ view: some View) {
-        if let window = windows[id], window.isVisible {
+        if let window = windows[id] { // membership, not isVisible: ⌘H hides open windows
             AccessoryWindows.shared.show(window)
             return
         }

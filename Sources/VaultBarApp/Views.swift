@@ -36,7 +36,7 @@ struct SettingsView: View {
             } header: {
                 Text("Auto-lock (all vaults)")
             } footer: {
-                Text("0 turns idle locking off.")
+                Text("0 turns idle locking off.").foregroundStyle(.secondary)
             }
             Section {
                 Picker("Hotkey that locks every vault", selection: controller.binding(\.panicHotkey)) {
@@ -47,7 +47,7 @@ struct SettingsView: View {
             } header: {
                 Text("Panic lock")
             } footer: {
-                Text("Forcing a busy vault can lose unsaved changes in open apps. ⌥-click the menu bar icon to lock all without forcing.")
+                Text("Forcing a busy vault can lose unsaved changes in open apps. ⌥-click the menu bar icon to lock all without forcing.").foregroundStyle(.secondary)
             }
             Section {
                 Toggle("Launch at login", isOn: controller.binding(\.launchAtLogin))
@@ -56,7 +56,7 @@ struct SettingsView: View {
                 }
                 Toggle("Open in Finder after unlocking", isOn: controller.binding(\.openAfterUnlock))
             } footer: {
-                Text("Auto-lock only works while VaultBar is running.")
+                Text("Auto-lock only works while VaultBar is running.").foregroundStyle(.secondary)
             }
             Section {
                 LabeledContent("Folder") {
@@ -76,7 +76,7 @@ struct SettingsView: View {
             } header: {
                 Text("Raycast Script Commands")
             } footer: {
-                Text("One Unlock, one Lock and one Open script for each vault.")
+                Text("One Unlock, one Lock and one Open script for each vault.").foregroundStyle(.secondary)
             }
             Section {
                 LabeledContent("VaultBar \(version)") {
