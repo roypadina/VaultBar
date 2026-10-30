@@ -28,6 +28,10 @@ brew install --cask roypadina/tap/vaultbar
 
 <br>
 
+<img src="docs/demo.gif" alt="VaultBar in action: a click on the menu bar icon opens the unlock panel, the password is typed and never stored, the menu lists the vault as unlocked, and after idle time it locks itself again" width="720">
+
+<br>
+
 <img src="docs/screenshots/settings.png" alt="VaultBar Settings: two vaults, auto-lock options, panic hotkey, launch at login and the Raycast scripts folder" width="420">
 &nbsp;
 <img src="docs/screenshots/newvault.png" alt="VaultBar New Vault window: name, folder, size, password and confirmation, with a reminder to save the password first" width="420">
