@@ -20,7 +20,7 @@ if arguments.count == 2, ["--render-settings", "--render-newvault"].contains(arg
     let content: AnyView
     switch arguments[0] {
     case "--render-newvault": content = AnyView(NewVaultView(controller: controller, close: {}))
-    default: content = AnyView(SettingsView(controller: controller))
+    default: content = AnyView(SettingsView(controller: controller, height: 1036)) // the whole form, unscrolled
     }
     let view = NSHostingView(rootView: content.environment(\.controlActiveState, .key))
     view.frame.size = view.fittingSize

@@ -4,6 +4,7 @@ import VaultBarCore
 
 struct SettingsView: View {
     @ObservedObject var controller: AppController
+    var height: CGFloat = 680
     private let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
 
     var body: some View {
@@ -88,7 +89,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 680) // the grouped form scrolls instead of growing with every vault
+        .frame(width: 520, height: height) // the grouped form scrolls instead of growing with every vault
     }
 }
 
