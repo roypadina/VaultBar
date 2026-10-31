@@ -46,8 +46,13 @@ scheme), installs its login agent and removes everything again at the end.
 - `Tests/VaultBarCoreTests` — Swift Testing suite for the core (plus the gated end-to-end test).
 - `Assets/icons` — SVG sources for the app and menu bar icons; regenerate the PNG/icns with
   `Scripts/make_icons.sh` (needs `brew install librsvg`).
-- `docs/screenshots/settings.png` — rendered offscreen with demo vaults:
-  `swift build && .build/debug/VaultBarApp --render-settings docs/screenshots/settings.png`.
+- `docs/screenshots/settings.png` and `newvault.png` — rendered offscreen with demo vaults, from the packaged
+  app so the version label is filled in:
+  ```sh
+  Scripts/package_app.sh
+  dist/VaultBar.app/Contents/MacOS/VaultBar --render-settings docs/screenshots/settings.png
+  dist/VaultBar.app/Contents/MacOS/VaultBar --render-newvault docs/screenshots/newvault.png
+  ```
 
 ## Workflow
 
