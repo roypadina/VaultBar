@@ -44,7 +44,7 @@ brew install --cask roypadina/tap/vaultbar
 
 - **Your password is never stored.** Not in the Keychain, not on disk, not in the clipboard. It goes to macOS's own disk-image tools through a pipe, and a person types it every time.
 - **It locks itself.** Sleep, screen lock or idle: the vault unmounts without you remembering to. A panic hotkey locks everything at once.
-- **One click, native, scriptable.** A menu bar icon, plus a `vaultbar` command line, `vaultbar://` links and Raycast scripts. Built on macOS's own AES-256 APFS images: no kernel extension, no FUSE, no network.
+- **One click, native, scriptable.** A menu bar icon, plus a `vaultbar` command line, `vaultbar://` links and Raycast scripts. Built on macOS's own AES-256 APFS images: no kernel extension, no FUSE. It makes no network connections, except an update check that runs only if you allow it when asked.
 
 ### VaultBar vs Cryptomator and VeraCrypt
 
@@ -142,6 +142,8 @@ xattr -dr com.apple.quarantine /Applications/VaultBar.app
 
 Or download `VaultBar.zip` from the [latest release](https://github.com/roypadina/VaultBar/releases/latest),
 unzip it and move `VaultBar.app` to `/Applications`.
+
+**Updates** from inside the app (0.4.0 and later): on its second launch VaultBar asks once whether to check for updates automatically. With your yes it checks once a day (it downloads the release feed from GitHub and sends nothing about you) and asks before installing a new version. Check by hand with **Check for Updates…** in the menu bar menu, About or Settings. Updates are signed and need no `xattr` step. Installing one quits VaultBar without the "Quit VaultBar?" prompt and starts the new version; any unlocked vault stays unlocked, and auto-lock is off for the few seconds in between.
 
 **Upgrades** (`brew upgrade --cask vaultbar`) are picked up automatically: within about 30 s, once nothing is in
 progress, the running VaultBar starts the new version and quits as soon as it has taken over, so from 0.2.1 on
@@ -271,7 +273,7 @@ never through Raycast. VaultBar only ever deletes scripts it wrote itself (marke
 - Notifications never name a vault (they can show on the lock screen). History is kept in memory only.
 - Lock events are logged (vault name and reason only) under the `com.padina.vaultbar` subsystem:
   `log show --predicate 'subsystem == "com.padina.vaultbar"' --info --last 1h`.
-- Encryption is macOS's own (DiskImages, AES-256). VaultBar is a front end; it makes no network connections.
+- Encryption is macOS's own (DiskImages, AES-256). VaultBar is a front end; it makes no network connections except the update check, which runs only if you allow it when asked (it downloads the release feed from GitHub and sends nothing about you).
 
 ## Where plaintext can leak
 

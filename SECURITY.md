@@ -13,7 +13,7 @@ and the report disclosed, with credit unless you prefer otherwise.
 
 ## Scope
 
-VaultBar runs entirely on-device and makes no network connections. The encryption itself is macOS's
+VaultBar runs on-device and makes no network connections, except the update check (Sparkle, release feed from GitHub), which runs only if the user allows it. The encryption itself is macOS's
 (DiskImages, AES-256). Relevant areas:
 
 - how the password travels: the popup and New Vault form, `Secret`, and the stdin pipe to `hdiutil` / `diskutil`
