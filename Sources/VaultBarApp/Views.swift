@@ -83,6 +83,7 @@ struct SettingsView: View {
                 LabeledContent("VaultBar \(version)") {
                     HStack {
                         Button("Welcome Guide…") { controller.showWelcome() }
+                        Button("Check for Updates…") { controller.checkForUpdates() }
                         Button("About…") { controller.showAbout() }
                     }
                 }
@@ -317,6 +318,7 @@ struct AboutView: View {
                 Text("Version \(info["CFBundleShortVersionString"] as? String ?? "") (\(info["CFBundleVersion"] as? String ?? ""))")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                Button("Check for Updates…") { Updates.check() }.padding(.top, 4)
             }
 
             VStack(spacing: 8) {

@@ -72,6 +72,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Only the app proper (the CLI and --render-* paths exit before this); the headless test variant stays offline.
+        if Bundle.main.bundleIdentifier != nil, !Instance.isHeadless { _ = Updates.controller }
         installMainMenu()
         if !Instance.isHeadless {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -226,6 +228,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     /// Quitting with a vault unlocked leaves it unguarded, so ask. Logout/restart/shutdown carry a quit reason
     /// (macOS unmounts everything then anyway) and go through without asking.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if Updates.relaunching { return .terminateNow } // Sparkle is installing an update: a prompt would stall it
         if NSAppleEventManager.shared().currentAppleEvent?.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason)) != nil {
             return .terminateNow
         }
@@ -387,6 +390,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         }
         menu.addItem(menuItem("History", #selector(showHistory)))
         menu.addItem(.separator())
+        menu.addItem(menuItem(Updates.menuTitle, #selector(checkForUpdates)))
         menu.addItem(menuItem("New Vault…", #selector(newVault)))
         menu.addItem(menuItem("Add Existing Vault…", #selector(addExisting)))
         menu.addItem(menuItem("Settings…", #selector(showSettings), key: ","))
@@ -400,6 +404,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         statusItem?.button?.performClick(nil)
         statusItem?.menu = nil
     }
+
+    @objc func checkForUpdates() { Updates.check() }
 
     private func menuItem(_ title: String, _ action: Selector, key: String = "", target: AnyObject? = nil) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key)

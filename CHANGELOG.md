@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-04
+
+### Added
+- Updates from inside the app, with your permission. VaultBar asks once, on its second launch, whether to check for updates automatically; with your yes it checks once a day (downloading the release feed from GitHub, which sends nothing about you) and asks before installing a new version. Check by hand with **Check for Updates…** in the menu bar menu, the About window or Settings. Updates are signed and need no `xattr` step. Installing one quits VaultBar without the "Quit VaultBar?" prompt (unlocked vaults stay unlocked) and starts the new version.
+
+### Changed
+- VaultBar now makes one kind of network connection, the update check above, and only if you allow it. Everything else is as before: no analytics, no other requests.
+
 ## [0.3.0] - 2026-10-30
 
 ### Added
