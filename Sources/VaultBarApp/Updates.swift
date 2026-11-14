@@ -37,8 +37,8 @@ import Sparkle
             MainActor.assumeIsolated {
                 if SupportPanel.current != nil { SupportPanel.respond(.snooze); SupportPanel.close() }
                 NSApp.setActivationPolicy(.regular)
-                // A "Check for Updates…" click forces it (macOS 14+ can refuse activate()); scheduled reminders never steal focus.
-                if userInitiated { NSApp.activate(ignoringOtherApps: true) } else { NSApp.activate() }
+                // A "Check for Updates…" click forces it and guards the hand-back after the .regular switch (macOS 14+); scheduled reminders never steal focus.
+                if userInitiated { NSApp.activate(ignoringOtherApps: true); AccessoryWindows.shared.keepFront(nil) } else { NSApp.activate() }
             }
         }
 
