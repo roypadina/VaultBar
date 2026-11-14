@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-15
+
+### Fixed
+- On macOS 14 and later, Settings, About, Welcome, New Vault, History and Change Password windows opened from the menu bar come to the front and stay there, instead of opening behind the app you were using.
+- The Add Existing Vault… file panel opened from the menu comes to the front.
+- Check for Updates… brings the update window to the front.
+
 ## [0.5.0] - 2026-11-14
 
 ### Added
