@@ -34,6 +34,7 @@ import Sparkle
 
         func standardUserDriverWillHandleShowingUpdate(_ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem, state: SPUUserUpdateState) {
             MainActor.assumeIsolated {
+                if SupportPanel.current != nil { SupportPanel.respond(.snooze); SupportPanel.close() }
                 NSApp.setActivationPolicy(.regular)
                 NSApp.activate()
             }

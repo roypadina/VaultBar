@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-14
+
+### Added
+- Ko-fi support card: about 10 seconds after you lock a vault, a small receipt card may ask for a tip. It waits until 7 days after you install or update to this version, and until you have locked vaults more than 20 times with VaultBar. It asks at most 3 times a year, and never after an unlock, a wrong password, an auto-lock (sleep, screen lock, idle), a forced lock or the panic hotkey, nor while a vault is still unlocked, a VaultBar window, prompt or dialog is open, the microphone is in use, you are away or auto-lock is paused. "Ask me in 2 weeks" snoozes it. "Nope, don't ask again" keeps it quiet until the next major version, and for at least 90 days. A card still open when you unlock a vault or VaultBar opens a window, dialog or update prompt closes and counts as a snooze; one left unanswered for 5 minutes, or when you step away (2 minutes without input, sleep or screen lock), fades and counts as a snooze too. The card never takes keyboard focus, and the same three choices are in the right-click menu for keyboard and VoiceOver users. Hold ⌥ in the menu for "Show Support Prompt Now" to preview it. The counts (locks and unlocks since this version) stay on your Mac; nothing is sent.
+
 ## [0.4.0] - 2026-11-04
 
 ### Added

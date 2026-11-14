@@ -345,6 +345,8 @@ Free, open-source Mac menu-bar apps and terminal tools, all on one site: **[apps
 If VaultBar keeps your private files one click away (and locked when you walk off), you can support its
 development — it's optional and always appreciated.
 
+Once in a while, VaultBar asks too. A small receipt card shows up about 10 seconds after you lock a vault. It only appears after you have locked vaults more than 20 times with VaultBar, and at most 3 times a year. "Ask me in 2 weeks" snoozes it, and "Nope, don't ask again" keeps it away until the next major version. If you unlock a vault or open a VaultBar window while the card is still open, it closes and counts as a snooze; one left unanswered for 5 minutes, or when you step away (2 minutes without input, sleep or screen lock), fades and counts as a snooze too. It never shows after an auto-lock or while auto-lock is paused, never takes keyboard focus, and its counts stay on your Mac.
+
 [![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/roypadina)
 
 A ⭐ on the repo helps just as much.

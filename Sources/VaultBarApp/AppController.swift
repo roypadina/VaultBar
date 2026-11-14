@@ -42,6 +42,12 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     private var nextSuccessionAttempt = Date.distantPast
     /// Installing or removing the login agent; no hand-off until it's done.
     private var registering = false
+    /// The Ko-fi support card is on screen: mirrored in the menu (the card never takes keyboard focus).
+    private var supportPromptShowing = false
+    /// The pending try ~10 s after the last lock by the user.
+    private var supportPromptTask: Task<Void, Never>?
+    /// The panic hotkey's last use: no support card right after it.
+    private var panicAt = Date.distantPast
 
     override init() { super.init() }
 
@@ -114,6 +120,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         ) { _ in
             MainActor.assumeIsolated {
                 self.screenLocked = true
+                self.supportPromptMakeWay()
                 if self.pause.shouldAutoLock(.screenLock, settings: self.config.autoLock) {
                     self.autoLock(.screenLock, reason: "screen lock", forceAfter: 30)
                 }
@@ -132,6 +139,10 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         setUpNotifications()
         applyPanicHotkey()
         syncScripts() // idempotent; brings scripts added in an update without pressing Regenerate
+        // Ko-fi card: its first-ask clock starts at the first launch of the version that ships it.
+        if UserDefaults.standard.object(forKey: Self.supportInstallDateKey) == nil {
+            UserDefaults.standard.set(Date(), forKey: Self.supportInstallDateKey)
+        }
         showWelcomeOnce()
     }
 
@@ -217,7 +228,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
     private var activity: Activity {
         Activity(prompting: prompting, inFlight: inFlight, pendingForce: pendingForce.count, paused: pause.isActive(),
-                 uiOpen: NSApp.modalWindow != nil || statusItem?.menu != nil || !windows.isEmpty)
+                 uiOpen: NSApp.modalWindow != nil || statusItem?.menu != nil || !windows.isEmpty || supportPromptShowing)
     }
 
     /// A tool run off the main thread that, unlike `background`, doesn't count as work in progress.
@@ -350,6 +361,15 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         refresh()
         let menu = NSMenu()
         menu.autoenablesItems = false // Lock All is enabled by hand
+        if supportPromptShowing { // the receipt card is mouse-only; same three answers here
+            menu.addItem(.sectionHeader(title: "Support VaultBar"))
+            for (tag, title) in ["Tip a Coffee on Ko-fi ☕", "Ask Me in 2 Weeks", "Don't Ask Again"].enumerated() {
+                let item = menuItem(title, #selector(answerSupportMenu(_:)))
+                item.tag = tag // index into supportAnswers
+                menu.addItem(item)
+            }
+            menu.addItem(.separator())
+        }
         for vault in config.vaults {
             let mount = mounted.mount(of: vault)
             let state = mount.map { $0.readOnly ? "Unlocked (read-only)" : "Unlocked" } ?? "Locked"
@@ -396,7 +416,13 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         menu.addItem(menuItem("Settings…", #selector(showSettings), key: ","))
         menu.addItem(.separator())
         menu.addItem(menuItem("About VaultBar", #selector(showAbout)))
-        menu.addItem(menuItem("Support on Ko-fi ☕", #selector(openKoFi)))
+        let koFi = menuItem("Support on Ko-fi ☕", #selector(openKoFi))
+        koFi.keyEquivalentModifierMask = [] // no modifier, so ⌥ swaps in the alternate below
+        menu.addItem(koFi)
+        let preview = menuItem("Show Support Prompt Now", #selector(previewSupportPrompt)) // hold ⌥; never recorded
+        preview.keyEquivalentModifierMask = .option
+        preview.isAlternate = true
+        menu.addItem(preview)
         menu.addItem(.separator())
         menu.addItem(menuItem("Quit VaultBar", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp))
         // Attach the menu only for this click, so a left-click keeps toggling the default vault.
@@ -435,6 +461,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
     /// Global hotkey: lock every vault now; busy ones are forced unless "Panic hotkey forces" is off.
     func panicLock() {
+        panicAt = Date()
         guard config.panicForces else { return lockAll() }
         refresh()
         for vault in config.vaults {
@@ -481,6 +508,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func unlock(_ vault: Vault, thenOpen: Bool, readOnly: Bool, error: String? = nil) {
+        supportPromptMakeWay()
         guard !prompting else {
             if passwordPanel.isVisible { passwordPanel.makeKeyAndOrderFront(nil) } // asked twice: bring it back
             return
@@ -525,6 +553,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             if result.ok {
                 log.notice("unlocked \(vault.name, privacy: .public)\(readOnly ? " read-only" : "", privacy: .public)")
                 record("Unlocked \(vault.name)\(readOnly ? " (read-only)" : "")")
+                UserDefaults.standard.set(UserDefaults.standard.integer(forKey: Self.supportUnlocksKey) + 1,
+                                          forKey: Self.supportUnlocksKey)
                 requestNotificationPermission()
                 if thenOpen { openInFinder(vault) }
                 return
@@ -545,6 +575,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         if let folder = vault.expandedMountPoint { MountFolder.remove(folder) }
         log.notice("\(forced ? "force-locked" : "locked", privacy: .public) \(vault.name, privacy: .public): \(reason, privacy: .public)")
         record("\(forced ? "Force-locked" : "Locked") \(vault.name) (\(reason))")
+        UserDefaults.standard.set(UserDefaults.standard.integer(forKey: Self.supportAllLocksKey) + 1,
+                                  forKey: Self.supportAllLocksKey)
         if notify { self.notify("A vault was locked (\(reason)).") }
     }
 
@@ -566,6 +598,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             let automatic = if case .forceAfter = onBusy { true } else { false }
             if result.ok {
                 locked(vault, at: mountPoint, reason: reason, forced: false, notify: automatic)
+                if !automatic { userLocked() }
                 return
             }
             guard result.isBusy else {
@@ -604,6 +637,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func forceLock(_ vault: Vault, _ mountPoint: String, reason: String, notify: Bool) async {
+        supportPromptTask?.cancel() // a forced lock is no success moment, even inside Lock All
         let result = await background { HDIUtil.detach(mountPoint, force: true) }
         refresh()
         if result.ok {
@@ -617,6 +651,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
     /// Runs synchronously so the detach finishes before the Mac sleeps.
     private func lockForSleep() {
+        supportPromptMakeWay() // the user is leaving: drop a pending try, fade a card on screen (= snooze)
         guard pause.shouldAutoLock(.sleep, settings: config.autoLock) else { return } // ignores the pause
         refresh()
         for vault in config.vaults {
@@ -689,6 +724,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func autoLock(_ trigger: AutoLockTrigger, reason: String, forceAfter delay: TimeInterval) {
+        supportPromptTask?.cancel() // screen lock or idle: the user isn't there
         refresh()
         for vault in config.vaults { lock(vault, reason: reason, onBusy: .forceAfter(delay, trigger)) }
     }
@@ -796,6 +832,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     // MARK: Add / create
 
     @objc func addExisting() {
+        supportPromptMakeWay()
         NSApp.activate()
         let panel = NSOpenPanel()
         panel.message = "Choose an encrypted .sparsebundle or .dmg"
@@ -878,6 +915,89 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         NSWorkspace.shared.open(AboutView.koFi)
     }
 
+    // MARK: Ko-fi support card (UserDefaults; counting starts with the version that ships the card)
+
+    private static let supportInstallDateKey = "supportInstallDate"
+    private static let supportLocksKey = "supportVaultLocks"
+    private static let supportAllLocksKey = "supportAllLocks" // every lock, auto and forced too: the receipt row
+    private static let supportUnlocksKey = "supportUnlocks"
+    private static let supportPromptKey = "supportPrompt"
+    private static let supportAnswers: [SupportPromptState.Answer] = [.support, .snooze, .never] // menu mirror tags
+    private static var appVersion: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0" }
+
+    private var supportPrompt: SupportPromptState {
+        get {
+            UserDefaults.standard.data(forKey: Self.supportPromptKey)
+                .flatMap { try? JSONDecoder().decode(SupportPromptState.self, from: $0) } ?? SupportPromptState()
+        }
+        set { UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: Self.supportPromptKey) }
+    }
+
+    /// The success moment: the user locked a vault cleanly (never auto-lock, sleep or a forced lock). Counted, then
+    /// the card gets one try ~10 s later; Lock All restarts the wait per vault, so it is one try after the last.
+    private func userLocked() {
+        let defaults = UserDefaults.standard
+        defaults.set(defaults.integer(forKey: Self.supportLocksKey) + 1, forKey: Self.supportLocksKey)
+        supportPromptTask?.cancel()
+        supportPromptTask = Task {
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled else { return }
+            maybeShowSupportPrompt()
+        }
+    }
+
+    /// One try per lock; a guard that fails drops this chance, the next lock tries again.
+    private func maybeShowSupportPrompt(now: Date = Date()) {
+        refresh()
+        // Not now: VaultBar's own UI or work in progress, a vault (still or again) unlocked, just after the panic
+        // hotkey, nobody at the desk, or a call.
+        guard !Instance.isHeadless, activity.isIdle, !config.vaults.contains(where: { mountPoint($0) != nil }),
+              now.timeIntervalSince(panicAt) > 60, !screenLocked, idleSeconds() < 5, !SupportPanel.micInUse(),
+              !NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeMain }),
+              let installDate = UserDefaults.standard.object(forKey: Self.supportInstallDateKey) as? Date,
+              supportPrompt.mayAsk(now: now, installDate: installDate,
+                                   vaultLocks: UserDefaults.standard.integer(forKey: Self.supportLocksKey),
+                                   appVersion: Self.appVersion)
+        else { return }
+        supportPrompt.recordShown(now)
+        presentSupportPrompt()
+    }
+
+    /// The ⌥ menu preview: shows the real card but never touches the ask bookkeeping.
+    @objc private func previewSupportPrompt() { presentSupportPrompt(record: false) }
+
+    private func presentSupportPrompt(record: Bool = true) {
+        guard !supportPromptShowing else { return }
+        supportPromptShowing = true
+        let defaults = UserDefaults.standard
+        SupportPanel.show(vaultLocks: defaults.integer(forKey: Self.supportAllLocksKey),
+                          unlocks: defaults.integer(forKey: Self.supportUnlocksKey),
+                          statusItemWindow: statusItem?.button?.window,
+                          onAnswer: { [weak self] answer in self?.answerSupportPrompt(answer, record: record) },
+                          onClosed: { [weak self] in self?.supportPromptShowing = false })
+    }
+
+    private func answerSupportPrompt(_ answer: SupportPromptState.Answer, record: Bool) {
+        if answer == .support { openKoFi() }
+        guard record else { return }
+        supportPrompt.record(answer, now: Date(), appVersion: Self.appVersion)
+    }
+
+    @objc private func answerSupportMenu(_ sender: NSMenuItem) {
+        SupportPanel.respond(Self.supportAnswers[sender.tag])
+        SupportPanel.close()
+    }
+
+    /// VaultBar's own UI (unlock prompt, a window, a dialog) comes first: a pending try is dropped, and a card still
+    /// unanswered counts as "Ask me in 2 weeks".
+    private func supportPromptMakeWay() {
+        supportPromptTask?.cancel()
+        if supportPromptShowing {
+            SupportPanel.respond(.snooze)
+            SupportPanel.close()
+        }
+    }
+
     @objc private func showHistory() {
         showWindow("history", "History", HistoryView(controller: self))
     }
@@ -945,6 +1065,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func showWindow(_ id: String, _ title: String, _ view: some View) {
+        supportPromptMakeWay()
         if let window = windows[id] { // membership, not isVisible: ⌘H hides open windows
             AccessoryWindows.shared.show(window)
             return
@@ -993,6 +1114,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     // MARK: Alerts
 
     func alert(_ title: String, _ text: String) {
+        supportPromptMakeWay()
         NSApp.activate()
         let alert = NSAlert()
         alert.messageText = title
@@ -1001,6 +1123,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func confirm(_ title: String, _ text: String, _ ok: String, cancel: String = "Cancel") -> Bool {
+        supportPromptMakeWay()
         NSApp.activate()
         let alert = NSAlert()
         alert.messageText = title
