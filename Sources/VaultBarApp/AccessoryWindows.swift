@@ -17,7 +17,8 @@ final class AccessoryWindows: NSObject, NSWindowDelegate {
 
     /// shortcut: ~0.5 s after the .accessory → .regular switch macOS hands activation back to the previous app (traced in
     /// PullPing: Settings behind Ghostex, no click). Take it back once unless the user clicked elsewhere meanwhile; drop when macOS stops.
-    /// Limit: a keyboard switch (⌘-Tab, a launcher hotkey) within the 1.5 s is pulled back once. nil = Sparkle's update window.
+    /// Limit: a keyboard switch (⌘-Tab, a launcher hotkey), or a click in our own window that opens another app, within the
+    /// 1.5 s is pulled back once. nil = Sparkle's update window.
     func keepFront(_ window: NSWindow?) {
         var clicked = false, done = false
         let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { _ in clicked = true }
