@@ -32,7 +32,7 @@ body:
     id: version
     attributes:
       label: VaultBar version and install method
-      placeholder: "0.5.1, Homebrew"
+      placeholder: "0.5.2, Homebrew"
     validations:
       required: true
   - type: textarea
