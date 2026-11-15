@@ -833,7 +833,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
     @objc func addExisting() {
         supportPromptMakeWay()
-        NSApp.activate()
+        // Forceful: a user action (status menu, Settings), and on macOS 14+ the front app can refuse activate() (panel behind).
+        NSApp.activate(ignoringOtherApps: true)
         let panel = NSOpenPanel()
         panel.message = "Choose an encrypted .sparsebundle or .dmg"
         panel.allowedContentTypes = ["sparsebundle", "dmg"].compactMap { UTType(filenameExtension: $0) }
